@@ -1,0 +1,10 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+crash.log
+results/
+/parking-api
+inventory.ini
+*.pem
+ansible/.inventory.generated.ini

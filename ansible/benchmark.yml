@@ -1,0 +1,117 @@
+---
+- name: Prepare Graviton load generator and deploy benchmark API
+  hosts: runner
+  become: true
+  vars:
+    benchmark_dir: /opt/ecs-mi-benchmark
+  tasks:
+    - name: Install benchmark dependencies
+      ansible.builtin.dnf:
+        name:
+          - docker
+          - golang
+        state: present
+
+    - name: Start Docker
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Install hey load generator
+      ansible.builtin.command:
+        cmd: go install github.com/rakyll/hey@v0.1.4
+      environment:
+        GOBIN: /usr/local/bin
+        GOPATH: /root/go
+      args:
+        creates: /usr/local/bin/hey
+
+    - name: Install AWS CLI v2
+      ansible.builtin.shell: |
+        set -euo pipefail
+        if ! command -v aws >/dev/null; then
+          dnf install -y unzip
+          curl -fsSL "https://awscli.amazonaws.com/awscli-exe-linux-aarch64.zip" -o /tmp/awscliv2.zip
+          unzip -oq /tmp/awscliv2.zip -d /tmp
+          /tmp/aws/install
+          rm -rf /tmp/aws /tmp/awscliv2.zip
+        fi
+      args:
+        executable: /bin/bash
+        creates: /usr/local/bin/aws
+
+    - name: Create project directory
+      ansible.builtin.file:
+        path: "{{ benchmark_dir }}"
+        state: directory
+        mode: "0755"
+
+    - name: Copy application Dockerfile
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../Dockerfile"
+        dest: "{{ benchmark_dir }}/Dockerfile"
+
+    - name: Copy Go module definition
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../go.mod"
+        dest: "{{ benchmark_dir }}/go.mod"
+
+    - name: Create Go application source directory
+      ansible.builtin.file:
+        path: "{{ benchmark_dir }}/cmd/parking-api"
+        state: directory
+        mode: "0755"
+
+    - name: Copy Go application source
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../cmd/parking-api/main.go"
+        dest: "{{ benchmark_dir }}/cmd/parking-api/main.go"
+
+    - name: Authenticate Docker to ECR
+      ansible.builtin.shell: |
+        aws ecr get-login-password --region {{ aws_region }} |
+          docker login --username AWS --password-stdin {{ ecr_repository_url.split('/')[0] }}
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Build and publish parking API image
+      ansible.builtin.shell: |
+        set -euo pipefail
+        docker build --pull -t {{ ecr_repository_url }}:benchmark {{ benchmark_dir }}
+        docker push {{ ecr_repository_url }}:benchmark
+      args:
+        executable: /bin/bash
+      changed_when: true
+
+    - name: Start ECS service
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ecs
+          - update-service
+          - --cluster
+          - "{{ ecs_cluster }}"
+          - --service
+          - "{{ ecs_service }}"
+          - --desired-count
+          - "1"
+          - --region
+          - "{{ aws_region }}"
+      changed_when: true
+
+    - name: Wait until ECS service is stable
+      ansible.builtin.command:
+        argv:
+          - aws
+          - ecs
+          - wait
+          - services-stable
+          - --cluster
+          - "{{ ecs_cluster }}"
+          - --services
+          - "{{ ecs_service }}"
+          - --region
+          - "{{ aws_region }}"
+      changed_when: false

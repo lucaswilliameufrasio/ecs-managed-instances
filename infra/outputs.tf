@@ -1,0 +1,10 @@
+output "runner_public_ip" { value = aws_instance.runner.public_ip }
+output "runner_instance_id" { value = aws_instance.runner.id }
+output "cluster_name" { value = aws_ecs_cluster.benchmark.name }
+output "service_name" { value = aws_ecs_service.api.name }
+output "ecr_repository_url" { value = aws_ecr_repository.api.repository_url }
+output "aws_account_id" { value = data.aws_caller_identity.current.account_id }
+output "aws_region" { value = var.aws_region }
+output "ecs_instance_type" { value = var.ecs_instance_type }
+output "load_duration_seconds" { value = var.load_duration_seconds }
+output "load_connections" { value = var.load_connections }
