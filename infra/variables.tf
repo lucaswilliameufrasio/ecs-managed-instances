@@ -67,7 +67,3 @@ variable "load_connections" {
   type    = number
   default = 64
 }
-variable "load_generator_threads" {
-  type    = number
-  default = 8
-}

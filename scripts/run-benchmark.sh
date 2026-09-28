@@ -97,7 +97,6 @@ ECS_INSTANCE_MEMORY_MIB="$(output ecs_instance_memory_mib)"
 TASK_CPU_UNITS="$(output task_cpu_units)"
 TASK_MEMORY_MIB="$(output task_memory_mib)"
 BENCHMARK_AZ="$(output benchmark_az)"
-LOAD_THREADS="$(output load_generator_threads)"
 IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
@@ -117,10 +116,9 @@ ansible-playbook -i "$ROOT_DIR/ansible/.inventory.generated.ini" "$ROOT_DIR/ansi
   -e "aws_region=$AWS_REGION" -e "ecs_cluster=$CLUSTER" -e "ecs_service=$SERVICE" -e "ecr_repository_url=$ECR_URL"
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
-  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$LOAD_THREADS' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT'" <<'REMOTE' | tee "$RESULT_JSON"
+  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
-import re
 import subprocess
 import sys
 import time
@@ -130,7 +128,7 @@ import urllib.request
 (
     cluster, service, duration, connections, run_id, account_id, region,
     ecs_instance_type, runner_instance_type, task_cpu_units, task_memory_mib,
-    benchmark_az, load_threads, image_ref, ecs_instance_vcpus,
+    benchmark_az, image_ref, ecs_instance_vcpus,
     ecs_instance_memory_mib, runner_vcpus, runner_memory_mib, source_commit,
 ) = sys.argv[1:]
 token_request = urllib.request.Request(
@@ -151,10 +149,7 @@ def metadata(path):
 
 load_generator_instance_type = metadata("instance-type")
 load_generator_instance_id = metadata("instance-id")
-go_version = subprocess.run(["go", "version"], capture_output=True, text=True, check=True).stdout.strip()
-hey_build = subprocess.run(["go", "version", "-m", "/usr/local/bin/hey"], capture_output=True, text=True, check=True).stdout
-hey_version_match = re.search(r"^\s*mod\s+github.com/rakyll/hey\s+(\S+)", hey_build, re.M)
-hey_version = hey_version_match.group(1) if hey_version_match else "unknown"
+oha_version = subprocess.run(["oha", "--version"], capture_output=True, text=True, check=True).stdout.strip()
 
 task_arn = None
 task = None
@@ -223,44 +218,33 @@ else:
 tests = []
 for endpoint, expected_status in (("health", 204), ("spots", 200)):
     result = subprocess.run(
-        ["hey", "-cpus", load_threads, "-t", "5", "-c", connections, "-z", f"{duration}s", f"{api_url}/{endpoint}"],
+        ["oha", "--no-tui", "-w", "--http-version", "1.1", "--output-format", "json",
+         "-t", "5s", "-c", connections, "-z", f"{duration}s", f"{api_url}/{endpoint}"],
         capture_output=True,
         text=True,
         timeout=int(duration) + 30,
         check=True,
     )
-    print(result.stdout, file=sys.stderr, end="")
-    output = result.stdout
-    rps = float(re.search(r"Requests/sec:\s+([\d.]+)", output).group(1))
-    elapsed = float(re.search(r"Total:\s+([\d.]+)\s+secs", output).group(1))
-    total_data = int(re.search(r"Total data:\s+(\d+)\s+bytes", output).group(1)) if re.search(r"Total data:\s+(\d+)\s+bytes", output) else 0
-    status_block = re.search(r"Status code distribution:(.*?)(?:\n\n|\Z)", output, re.S)
-    statuses = {
-        int(code): int(count)
-        for code, count in re.findall(r"\[(\d+)\]\s+(\d+) responses", status_block.group(1) if status_block else "")
-    }
-    error_block = re.search(r"Error distribution:(.*?)(?:\n\n|\Z)", output, re.S)
-    transport_errors = sum(
-        int(count)
-        for count in re.findall(r"\[(\d+)\]\s+[^\n]+", error_block.group(1) if error_block else "")
-    )
-    percentiles = {
-        int(percentile): float(seconds)
-        for percentile, seconds in re.findall(r"^\s*(\d+)% in\s+([\d.]+) secs", output, re.M)
-    }
+    output = json.loads(result.stdout)
+    summary = output["summary"]
+    statuses = {str(code): int(count) for code, count in output.get("statusCodeDistribution", {}).items()}
+    errors = output.get("errorDistribution", {})
+    percentiles = output.get("latencyPercentiles", {})
+    total_responses = sum(statuses.values())
+    transport_errors = sum(int(count) for count in errors.values())
     tests.append({
         "endpoint": f"/{endpoint}",
-        "requests_per_second": rps,
-        "estimated_total_requests": round(rps * elapsed),
-        "sampled_responses": sum(statuses.values()),
-        "transferred_bytes_per_second": total_data / elapsed if elapsed else 0,
-        "latency_p50_seconds": percentiles.get(50),
-        "latency_p75_seconds": percentiles.get(75),
-        "latency_p90_seconds": percentiles.get(90),
-        "latency_p95_seconds": percentiles.get(95),
-        "latency_p99_seconds": percentiles.get(99),
-        "sampled_http_status_counts": {str(code): count for code, count in statuses.items()},
-        "unexpected_status_count": sum(count for code, count in statuses.items() if code != expected_status),
+        "requests_per_second": summary["requestsPerSec"],
+        "total_requests": total_responses + transport_errors,
+        "total_responses": total_responses,
+        "transferred_bytes_per_second": summary["sizePerSec"],
+        "latency_p50_seconds": percentiles.get("p50"),
+        "latency_p75_seconds": percentiles.get("p75"),
+        "latency_p90_seconds": percentiles.get("p90"),
+        "latency_p95_seconds": percentiles.get("p95"),
+        "latency_p99_seconds": percentiles.get("p99"),
+        "http_status_counts": statuses,
+        "unexpected_status_count": sum(count for code, count in statuses.items() if int(code) != expected_status),
         "transport_error_count": transport_errors,
     })
 
@@ -283,9 +267,7 @@ print(json.dumps({
     "network_path": "VPC private task IP, same subnet/AZ, HTTP",
     "image_ref": image_ref,
     "source_commit": source_commit,
-    "load_generator_tool": f"hey {hey_version}",
-    "load_generator_go_version": go_version,
-    "load_generator_threads": int(load_threads),
+    "load_generator_tool": oha_version,
     "api_url": api_url,
     "duration_seconds": int(duration),
     "connections": int(connections),
@@ -297,11 +279,13 @@ python3 - "$RESULT_JSON" "$RESULT_CSV" <<'PY'
 import csv, json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 with open(sys.argv[2], "w", newline="", encoding="utf-8") as f:
-    fields = ["run_id", "region", "ecs_instance_type", "load_generator_instance_type", "endpoint", "duration_seconds", "connections", "requests_per_second", "estimated_total_requests", "sampled_responses", "transferred_bytes_per_second", "latency_p50_seconds", "latency_p75_seconds", "latency_p90_seconds", "latency_p95_seconds", "latency_p99_seconds", "unexpected_status_count", "transport_error_count"]
+    fields = ["run_id", "region", "ecs_instance_type", "load_generator_instance_type", "endpoint", "duration_seconds", "connections", "requests_per_second", "total_requests", "total_responses", "transferred_bytes_per_second", "latency_p50_seconds", "latency_p75_seconds", "latency_p90_seconds", "latency_p95_seconds", "latency_p99_seconds", "http_status_counts", "unexpected_status_count", "transport_error_count"]
     writer = csv.DictWriter(f, fieldnames=fields)
     writer.writeheader()
     for test in data["tests"]:
-        writer.writerow({**{key: data.get(key, "") for key in fields}, **test, "duration_seconds": data["duration_seconds"], "connections": data["connections"]})
+        row = {**{key: data.get(key, "") for key in fields}, **test, "duration_seconds": data["duration_seconds"], "connections": data["connections"]}
+        row["http_status_counts"] = json.dumps(test["http_status_counts"], sort_keys=True)
+        writer.writerow(row)
 PY
 
 mkdir -p "$REPORT_DIR"
@@ -318,29 +302,28 @@ lines = [
     f"- ECS managed instance: `{data['ecs_instance_type']}` — {data['ecs_instance_vcpus']} vCPU, {data['ecs_instance_memory_mib'] / 1024:g} GiB RAM",
     f"- Task: {data['task_cpu_units']} CPU units, {data['task_memory_mib']} MiB memory; desired count 1",
     f"- Load generator: `{data['load_generator_instance_type']}` — {data['load_generator_instance_vcpus']} vCPU, {data['load_generator_instance_memory_mib'] / 1024:g} GiB RAM",
-    f"- Load tool: `{data['load_generator_tool']}` ({data['load_generator_go_version']})",
-    f"- Test: {data['duration_seconds']} s per endpoint, {data['connections']} concurrent workers, {data['load_generator_threads']} load threads, 5 s request timeout",
+    f"- Load tool: `{data['load_generator_tool']}`",
+    f"- Test: {data['duration_seconds']} s per endpoint, {data['connections']} concurrent workers, HTTP/1.1, 5 s request timeout",
     f"- Network: {data['network_path']}; no ALB or NAT Gateway",
     f"- Container image: `{data['image_ref']}`",
     f"- Source commit: `{data['source_commit']}`",
     "",
     "## Results",
     "",
-    "| Endpoint | RPS | Estimated requests | Sampled responses | p50 | p95 | p99 | Status codes | Errors |",
+    "| Endpoint | RPS | Requests | Responses | p50 | p95 | p99 | Status codes | Errors |",
     "|---|---:|---:|---:|---:|---:|---:|---|---:|",
 ]
 for test in data["tests"]:
-    statuses = ", ".join(f"{code}: {count:,}" for code, count in test["sampled_http_status_counts"].items())
+    statuses = ", ".join(f"{code}: {count:,}" for code, count in test["http_status_counts"].items())
     lines.append(
-        f"| `{test['endpoint']}` | {test['requests_per_second']:,.2f} | {test['estimated_total_requests']:,} | "
-        f"{test['sampled_responses']:,} | {test['latency_p50_seconds'] * 1000:.3f} ms | "
+        f"| `{test['endpoint']}` | {test['requests_per_second']:,.2f} | {test['total_requests']:,} | "
+        f"{test['total_responses']:,} | {test['latency_p50_seconds'] * 1000:.3f} ms | "
         f"{test['latency_p95_seconds'] * 1000:.3f} ms | {test['latency_p99_seconds'] * 1000:.3f} ms | "
         f"{statuses} | {test['unexpected_status_count'] + test['transport_error_count']} |"
     )
 lines.extend([
     "",
-    "> `hey` stores latency/status samples for at most 1,000,000 responses. RPS covers the full duration; estimated requests are rounded from the printed RPS × elapsed time. Percentiles and status counts describe the capped sample.",
-    "> This report was reconstructed from the runner output because the IMDS metadata token expired during final JSON serialization; the exact task private IP was not retained. The load measurements themselves completed before that serialization error.",
+    "> Results come from Oha's JSON output; request counts, status counts and percentiles are recorded directly from that run. No separate warm-up phase is included.",
     "",
 ])
 with open(sys.argv[2], "w", encoding="utf-8") as report:

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"testing"
 )
 
@@ -79,6 +80,62 @@ func TestParkingBounds(t *testing.T) {
 			t.Fatalf("POST /leave status = %d, want %d", response.Code, http.StatusConflict)
 		}
 	})
+}
+
+func TestConcurrentParkingBounds(t *testing.T) {
+	t.Run("concurrent parks stop at capacity", func(t *testing.T) {
+		occupied.Store(0)
+		t.Cleanup(func() { occupied.Store(0) })
+
+		statuses := runParallelRequests(handler(), int(2*capacity), http.MethodPost, "/park")
+		created, full := countStatus(statuses, http.StatusCreated), countStatus(statuses, http.StatusConflict)
+		if created != int(capacity) || full != int(capacity) {
+			t.Fatalf("POST /park returned %d created and %d full; want %d each", created, full, capacity)
+		}
+		if got := occupied.Load(); got != capacity {
+			t.Fatalf("occupied = %d after concurrent parking; want %d", got, capacity)
+		}
+	})
+
+	t.Run("concurrent departures stop at zero", func(t *testing.T) {
+		occupied.Store(capacity)
+		t.Cleanup(func() { occupied.Store(0) })
+
+		statuses := runParallelRequests(handler(), int(2*capacity), http.MethodPost, "/leave")
+		left, empty := countStatus(statuses, http.StatusOK), countStatus(statuses, http.StatusConflict)
+		if left != int(capacity) || empty != int(capacity) {
+			t.Fatalf("POST /leave returned %d departures and %d empty; want %d each", left, empty, capacity)
+		}
+		if got := occupied.Load(); got != 0 {
+			t.Fatalf("occupied = %d after concurrent departures; want 0", got)
+		}
+	})
+}
+
+func runParallelRequests(handler http.Handler, count int, method, path string) []int {
+	statuses := make([]int, count)
+	var workers sync.WaitGroup
+	workers.Add(count)
+	for i := range count {
+		go func() {
+			defer workers.Done()
+			result := httptest.NewRecorder()
+			handler.ServeHTTP(result, httptest.NewRequest(method, path, nil))
+			statuses[i] = result.Code
+		}()
+	}
+	workers.Wait()
+	return statuses
+}
+
+func countStatus(statuses []int, wanted int) int {
+	count := 0
+	for _, status := range statuses {
+		if status == wanted {
+			count++
+		}
+	}
+	return count
 }
 
 type responseBody struct {

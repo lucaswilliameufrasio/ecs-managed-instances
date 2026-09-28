@@ -1,6 +1,6 @@
 # ECS Managed Instances benchmark
 
-Benchmark a small Go parking API on ECS Managed Instances using a Graviton EC2 load generator. OpenTofu provisions the temporary AWS environment, Ansible installs/configures the runner, `hey` measures HTTP throughput and latency against the task's private IP, and the runner saves JSON/CSV before destroying the infrastructure.
+Benchmark a small Go parking API on ECS Managed Instances using a Graviton EC2 load generator. OpenTofu provisions the temporary AWS environment, Ansible installs/configures the runner, `oha` measures HTTP throughput and latency against the task's private IP, and the runner saves JSON/CSV before destroying the infrastructure.
 
 ## What gets created
 
@@ -39,7 +39,7 @@ Edit `infra/variables.tf` to change ECS/runner instance types, connection count,
 
 ## Results
 
-Each run writes JSON/CSV/log files under ignored `results/` and a Markdown report at `benchmarks/runs/<UTC-run-id>.md`, ready to review and commit. The report includes instance/task sizing, AZ, concurrency, duration, tool/image/source revisions and results. The tests are `GET /health` and `GET /spots`; default duration is 30 seconds with 64 concurrent connections per endpoint. `hey` caps its latency/status samples at one million responses; its requests/sec covers the full duration, while sampled status counts and percentiles describe that bounded sample. Health checks and HTTP requests have bounded timeouts; a failed health check prints task and ECS service diagnostics before teardown.
+Each run writes JSON/CSV/log files under ignored `results/` and a Markdown report at `benchmarks/runs/<UTC-run-id>.md`, ready to review and commit. The report includes instance/task sizing, AZ, concurrency, duration, tool/image/source revisions and results. The tests are `GET /health` and `GET /spots`; default duration is 30 seconds with 64 concurrent connections per endpoint. Oha writes structured JSON with throughput, status counts and latency percentiles. The earlier Hey run is documented separately; Hey capped its latency/status samples at one million responses. Health checks and HTTP requests have bounded timeouts; a failed health check prints task and ECS service diagnostics before teardown.
 
 For apples-to-apples comparisons, record separate runs with identical settings and change only the ECS instance type. Keep task size, API image and runner type constant. For stronger results, warm up first and repeat each run several times; this initial harness does not collect CloudWatch service/host metrics or estimate AWS cost.
 

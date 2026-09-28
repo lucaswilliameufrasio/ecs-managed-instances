@@ -4,12 +4,12 @@
   become: true
   vars:
     benchmark_dir: /opt/ecs-mi-benchmark
+    oha_version: v1.16.0
   tasks:
     - name: Install benchmark dependencies
       ansible.builtin.dnf:
         name:
           - docker
-          - golang
         state: present
 
     - name: Start Docker
@@ -18,14 +18,12 @@
         state: started
         enabled: true
 
-    - name: Install hey load generator
-      ansible.builtin.command:
-        cmd: go install github.com/rakyll/hey@v0.1.4
-      environment:
-        GOBIN: /usr/local/bin
-        GOPATH: /root/go
-      args:
-        creates: /usr/local/bin/hey
+    - name: Install pinned Oha load generator
+      ansible.builtin.get_url:
+        url: "https://github.com/hatoo/oha/releases/download/{{ oha_version }}/oha-linux-arm64"
+        dest: /usr/local/bin/oha
+        mode: "0755"
+        checksum: sha256:99a790eb8c3e0feaca974bd6b32f0f8d4426a0c5b289f39e833e5b2c7529cd39
 
     - name: Install AWS CLI v2
       ansible.builtin.shell: |

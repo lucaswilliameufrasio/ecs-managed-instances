@@ -14,6 +14,5 @@ output "runner_memory_mib" { value = var.runner_memory_mib }
 output "task_cpu_units" { value = var.task_cpu_units }
 output "task_memory_mib" { value = var.task_memory_mib }
 output "benchmark_az" { value = aws_subnet.public.availability_zone }
-output "load_generator_threads" { value = var.load_generator_threads }
 output "load_duration_seconds" { value = var.load_duration_seconds }
 output "load_connections" { value = var.load_connections }
