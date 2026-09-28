@@ -132,7 +132,7 @@ resource "aws_ecs_service" "api" {
   name            = var.name
   cluster         = aws_ecs_cluster.benchmark.id
   task_definition = aws_ecs_task_definition.api.arn
-  desired_count   = 0
+  desired_count   = var.service_desired_count
   capacity_provider_strategy {
     capacity_provider = aws_ecs_capacity_provider.managed.name
     weight            = 1
@@ -142,4 +142,34 @@ resource "aws_ecs_service" "api" {
     security_groups = [aws_security_group.ecs.id]
   }
   depends_on = [aws_ecs_cluster_capacity_providers.benchmark]
+
+  lifecycle {
+    ignore_changes = [desired_count]
+  }
+}
+
+resource "aws_appautoscaling_target" "ecs_service" {
+  count              = var.enable_service_autoscaling ? 1 : 0
+  max_capacity       = var.autoscaling_max_tasks
+  min_capacity       = var.autoscaling_min_tasks
+  resource_id        = "service/${aws_ecs_cluster.benchmark.name}/${aws_ecs_service.api.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "ecs_service_cpu" {
+  count              = var.enable_service_autoscaling ? 1 : 0
+  name               = "${var.name}-cpu-target-tracking"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.ecs_service[0].resource_id
+  scalable_dimension = aws_appautoscaling_target.ecs_service[0].scalable_dimension
+  service_namespace  = aws_appautoscaling_target.ecs_service[0].service_namespace
+  target_tracking_scaling_policy_configuration {
+    target_value       = var.autoscaling_target_cpu_percent
+    scale_out_cooldown = var.autoscaling_scale_out_cooldown_seconds
+    scale_in_cooldown  = var.autoscaling_scale_in_cooldown_seconds
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+  }
 }

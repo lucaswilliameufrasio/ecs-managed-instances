@@ -97,6 +97,13 @@ ECS_INSTANCE_MEMORY_MIB="$(output ecs_instance_memory_mib)"
 TASK_CPU_UNITS="$(output task_cpu_units)"
 TASK_MEMORY_MIB="$(output task_memory_mib)"
 BENCHMARK_AZ="$(output benchmark_az)"
+AUTOSCALING_MIN="$(output autoscaling_min_tasks)"
+AUTOSCALING_MAX="$(output autoscaling_max_tasks)"
+AUTOSCALING_CPU="$(output autoscaling_target_cpu_percent)"
+AUTOSCALING_SCALE_IN="$(output autoscaling_scale_in_cooldown_seconds)"
+AUTOSCALING_SCALE_OUT="$(output autoscaling_scale_out_cooldown_seconds)"
+LOAD_MAX_CONNECTIONS="$(output load_max_connections)"
+LOAD_SCALE_SETTLE_SECONDS="$(output load_scale_settle_seconds)"
 IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
@@ -113,23 +120,46 @@ for attempt in $(seq 1 60); do
 done
 
 ansible-playbook -i "$ROOT_DIR/ansible/.inventory.generated.ini" "$ROOT_DIR/ansible/benchmark.yml" \
-  -e "aws_region=$AWS_REGION" -e "ecs_cluster=$CLUSTER" -e "ecs_service=$SERVICE" -e "ecr_repository_url=$ECR_URL"
+  -e "aws_region=$AWS_REGION" -e "ecr_repository_url=$ECR_URL"
+
+# The image is now available in ECR. Enable service scaling and start its minimum task count.
+tofu -chdir="$INFRA_DIR" apply -auto-approve -input=false "${TOFU_VARS[@]}" \
+  -var=enable_service_autoscaling=true \
+  -var="service_desired_count=$AUTOSCALING_MIN" \
+  -var="autoscaling_min_tasks=$AUTOSCALING_MIN" \
+  -var="autoscaling_max_tasks=$AUTOSCALING_MAX" \
+  -var="autoscaling_target_cpu_percent=$AUTOSCALING_CPU" \
+  -var="autoscaling_scale_in_cooldown_seconds=$AUTOSCALING_SCALE_IN" \
+  -var="autoscaling_scale_out_cooldown_seconds=$AUTOSCALING_SCALE_OUT" \
+  2>&1 | tee -a "$LOG_FILE"
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
-  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT'" <<'REMOTE' | tee "$RESULT_JSON"
+  "aws ecs update-service --cluster '$CLUSTER' --service '$SERVICE' --desired-count '$AUTOSCALING_MIN' --region '$AWS_REGION' >/dev/null"
+
+printf 'Waiting for initial ECS task before the autoscaling ramp...\n'
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
+  "aws ecs wait services-stable --cluster '$CLUSTER' --services '$SERVICE' --region '$AWS_REGION'"
+
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
+  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
+import os
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
 
 (
-    cluster, service, duration, connections, run_id, account_id, region,
+    cluster, service, duration, starting_connections, max_connections, scale_settle_seconds,
+    run_id, account_id, region,
     ecs_instance_type, runner_instance_type, task_cpu_units, task_memory_mib,
     benchmark_az, image_ref, ecs_instance_vcpus,
     ecs_instance_memory_mib, runner_vcpus, runner_memory_mib, source_commit,
+    autoscaling_min_tasks, autoscaling_max_tasks, autoscaling_target_cpu,
+    autoscaling_scale_in_cooldown, autoscaling_scale_out_cooldown,
 ) = sys.argv[1:]
 token_request = urllib.request.Request(
     "http://169.254.169.254/latest/api/token",
@@ -147,84 +177,104 @@ def metadata(path):
     with urllib.request.urlopen(request) as response:
         return response.read().decode()
 
+def aws_json(*args):
+    result = subprocess.run(["aws", *args, "--region", region, "--output", "json"],
+                            capture_output=True, text=True, check=True)
+    return json.loads(result.stdout)
+
+def service_state():
+    response = aws_json("ecs", "describe-services", "--cluster", cluster, "--services", service)
+    services = response.get("services", [])
+    if not services:
+        raise RuntimeError(f"ECS service {service} not found")
+    current = services[0]
+    return {
+        "desired": current.get("desiredCount", 0),
+        "running": current.get("runningCount", 0),
+        "pending": current.get("pendingCount", 0),
+    }
+
+def running_task_ips():
+    listed = aws_json("ecs", "list-tasks", "--cluster", cluster,
+                      "--service-name", service, "--desired-status", "RUNNING")
+    task_arns = listed.get("taskArns", [])
+    if not task_arns:
+        return []
+    described = aws_json("ecs", "describe-tasks", "--cluster", cluster, "--tasks", *task_arns)
+    ips = []
+    for task in described.get("tasks", []):
+        if task.get("lastStatus") != "RUNNING":
+            continue
+        task_ip = None
+        for attachment in task.get("attachments", []):
+            for detail in attachment.get("details", []):
+                if detail.get("name") == "privateIPv4Address":
+                    task_ip = detail.get("value")
+                    break
+            if task_ip:
+                break
+        if not task_ip:
+            for container in task.get("containers", []):
+                interfaces = container.get("networkInterfaces", [])
+                if interfaces and interfaces[0].get("privateIpv4Address"):
+                    task_ip = interfaces[0]["privateIpv4Address"]
+                    break
+        if task_ip:
+            ipaddress.IPv4Address(task_ip)
+            ips.append(task_ip)
+    return sorted(set(ips))
+
+def managed_instance_count():
+    listed = aws_json("ecs", "list-container-instances", "--cluster", cluster,
+                      "--status", "ACTIVE")
+    return len(listed.get("containerInstanceArns", []))
+
+def ready_snapshot(timeout_seconds=300):
+    deadline = time.monotonic() + timeout_seconds
+    last = {}
+    while time.monotonic() < deadline:
+        last = service_state()
+        ips = running_task_ips()
+        if last["desired"] > 0 and last["running"] >= last["desired"] and last["pending"] == 0 and len(ips) >= last["running"]:
+            for task_ip in ips:
+                with urllib.request.urlopen(f"http://{task_ip}:8080/health", timeout=3) as health:
+                    if health.status != 204:
+                        raise RuntimeError(f"health check for {task_ip} returned {health.status}")
+            return last, ips
+        time.sleep(5)
+    raise TimeoutError(f"service did not become ready within {timeout_seconds}s; last state={last}")
+
 load_generator_instance_type = metadata("instance-type")
 load_generator_instance_id = metadata("instance-id")
 oha_version = subprocess.run(["oha", "--version"], capture_output=True, text=True, check=True).stdout.strip()
 
-task_arn = None
-task = None
-for _ in range(60):
-    listed = subprocess.run(
-        ["aws", "ecs", "list-tasks", "--region", region, "--cluster", cluster,
-         "--service-name", service, "--desired-status", "RUNNING", "--output", "json"],
-        capture_output=True, text=True, check=True,
-    )
-    task_arns = json.loads(listed.stdout).get("taskArns", [])
-    if task_arns:
-        described = subprocess.run(
-            ["aws", "ecs", "describe-tasks", "--region", region, "--cluster", cluster,
-             "--tasks", task_arns[0], "--output", "json"],
-            capture_output=True, text=True, check=True,
-        )
-        tasks = json.loads(described.stdout).get("tasks", [])
-        if tasks and tasks[0].get("lastStatus") == "RUNNING":
-            task_arn, task = task_arns[0], tasks[0]
-            break
-    time.sleep(2)
-
-if task is None:
-    raise SystemExit(f"No RUNNING task found for ECS service {service} after 120 seconds")
-
-task_ip = None
-for attachment in task.get("attachments", []):
-    for detail in attachment.get("details", []):
-        if detail.get("name") == "privateIPv4Address":
-            task_ip = detail.get("value")
-            break
-    if task_ip:
-        break
-if not task_ip:
-    for container in task.get("containers", []):
-        interfaces = container.get("networkInterfaces", [])
-        if interfaces and interfaces[0].get("privateIpv4Address"):
-            task_ip = interfaces[0]["privateIpv4Address"]
-            break
-if not task_ip:
-    raise SystemExit(f"Could not find the task ENI private IP in ECS task {task_arn}")
-ipaddress.IPv4Address(task_ip)
-api_url = f"http://{task_ip}:8080"
-
-last_health_error = None
-for _ in range(30):
-    try:
-        with urllib.request.urlopen(f"{api_url}/health", timeout=3) as response:
-            if response.status == 204:
-                break
-            last_health_error = f"unexpected status {response.status}"
-    except (urllib.error.URLError, TimeoutError, OSError) as error:
-        last_health_error = str(error)
-    time.sleep(2)
-else:
-    print(json.dumps({"task_arn": task_arn, "task_status": task.get("lastStatus"),
-                      "task_ip": task_ip, "health_error": last_health_error}), file=sys.stderr)
-    service_info = subprocess.run(
-        ["aws", "ecs", "describe-services", "--region", region, "--cluster", cluster,
-         "--services", service, "--query", "services[0].events[:8].[createdAt,message]", "--output", "json"],
-        capture_output=True, text=True,
-    )
-    print(service_info.stdout, file=sys.stderr)
-    raise SystemExit(f"Parking API health check failed at {api_url}/health: {last_health_error}")
+steps = [int(starting_connections)]
+while steps[-1] < int(max_connections):
+    steps.append(min(steps[-1] * 2, int(max_connections)))
 
 tests = []
-for endpoint, expected_status in (("health", 204), ("spots", 200)):
-    result = subprocess.run(
-        ["oha", "--no-tui", "-w", "--http-version", "1.1", "--output-format", "json",
-         "-t", "5s", "-c", connections, "-z", f"{duration}s", f"{api_url}/{endpoint}"],
-        capture_output=True,
-        text=True,
-        timeout=int(duration) + 30,
-        check=True,
-    )
+max_desired_observed = 0
+max_running_observed = 0
+max_managed_instances_observed = 0
+for concurrency in steps:
+    before, task_ips = ready_snapshot()
+    instances_before = managed_instance_count()
+    max_managed_instances_observed = max(max_managed_instances_observed, instances_before)
+    url_file = None
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", prefix="ecs-mi-oha-", suffix=".txt", delete=False) as urls:
+            url_file = urls.name
+            for task_ip in task_ips:
+                urls.write(f"http://{task_ip}:8080/spots\n")
+        result = subprocess.run(
+            ["oha", "--no-tui", "-w", "--http-version", "1.1", "--output-format", "json",
+             "-t", "5s", "-c", str(concurrency), "-z", f"{duration}s", "--urls-from-file", url_file],
+            capture_output=True, text=True, timeout=int(duration) + 30, check=True,
+        )
+    finally:
+        if url_file and os.path.exists(url_file):
+            os.unlink(url_file)
+
     output = json.loads(result.stdout)
     summary = output["summary"]
     statuses = {str(code): int(count) for code, count in output.get("statusCodeDistribution", {}).items()}
@@ -232,8 +282,24 @@ for endpoint, expected_status in (("health", 204), ("spots", 200)):
     percentiles = output.get("latencyPercentiles", {})
     total_responses = sum(statuses.values())
     transport_errors = sum(int(count) for count in errors.values())
+    time.sleep(int(scale_settle_seconds))
+    after, task_ips_after = ready_snapshot(timeout_seconds=300)
+    current_instances = managed_instance_count()
+    max_managed_instances_observed = max(max_managed_instances_observed, current_instances)
+    max_desired_observed = max(max_desired_observed, before["desired"], after["desired"])
+    max_running_observed = max(max_running_observed, before["running"], after["running"])
     tests.append({
-        "endpoint": f"/{endpoint}",
+        "endpoint": "/spots",
+        "concurrency": concurrency,
+        "duration_seconds": float(summary["total"]),
+        "task_ips_used": task_ips,
+        "desired_tasks_before": before["desired"],
+        "running_tasks_before": before["running"],
+        "managed_instances_before": instances_before,
+        "desired_tasks_after": after["desired"],
+        "running_tasks_after": after["running"],
+        "pending_tasks_after": after["pending"],
+        "managed_instances_after": current_instances,
         "requests_per_second": summary["requestsPerSec"],
         "total_requests": total_responses + transport_errors,
         "total_responses": total_responses,
@@ -244,7 +310,7 @@ for endpoint, expected_status in (("health", 204), ("spots", 200)):
         "latency_p95_seconds": percentiles.get("p95"),
         "latency_p99_seconds": percentiles.get("p99"),
         "http_status_counts": statuses,
-        "unexpected_status_count": sum(count for code, count in statuses.items() if int(code) != expected_status),
+        "unexpected_status_count": sum(count for code, count in statuses.items() if int(code) != 200),
         "transport_error_count": transport_errors,
     })
 
@@ -260,7 +326,6 @@ print(json.dumps({
     "load_generator_instance_type_configured": runner_instance_type,
     "load_generator_instance_vcpus": int(runner_vcpus),
     "load_generator_instance_memory_mib": int(runner_memory_mib),
-    "task_private_ip": task_ip,
     "load_generator_instance_type": load_generator_instance_type,
     "load_generator_instance_id": load_generator_instance_id,
     "availability_zone": benchmark_az,
@@ -268,9 +333,24 @@ print(json.dumps({
     "image_ref": image_ref,
     "source_commit": source_commit,
     "load_generator_tool": oha_version,
-    "api_url": api_url,
-    "duration_seconds": int(duration),
-    "connections": int(connections),
+    "autoscaling": {
+        "metric": "ECSServiceAverageCPUUtilization",
+        "target_cpu_percent": float(autoscaling_target_cpu),
+        "min_tasks": int(autoscaling_min_tasks),
+        "max_tasks": int(autoscaling_max_tasks),
+        "scale_in_cooldown_seconds": int(autoscaling_scale_in_cooldown),
+        "scale_out_cooldown_seconds": int(autoscaling_scale_out_cooldown),
+        "max_desired_tasks_observed": max_desired_observed,
+        "max_running_tasks_observed": max_running_observed,
+        "max_managed_instances_observed": max_managed_instances_observed,
+    },
+    "load_ramp": {
+        "starting_connections": int(starting_connections),
+        "max_connections": int(max_connections),
+        "step_multiplier": 2,
+        "duration_per_step_seconds": int(duration),
+        "settle_between_steps_seconds": int(scale_settle_seconds),
+    },
     "tests": tests,
 }, separators=(",", ":")))
 REMOTE
@@ -279,11 +359,11 @@ python3 - "$RESULT_JSON" "$RESULT_CSV" <<'PY'
 import csv, json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 with open(sys.argv[2], "w", newline="", encoding="utf-8") as f:
-    fields = ["run_id", "region", "ecs_instance_type", "load_generator_instance_type", "endpoint", "duration_seconds", "connections", "requests_per_second", "total_requests", "total_responses", "transferred_bytes_per_second", "latency_p50_seconds", "latency_p75_seconds", "latency_p90_seconds", "latency_p95_seconds", "latency_p99_seconds", "http_status_counts", "unexpected_status_count", "transport_error_count"]
+    fields = ["run_id", "region", "ecs_instance_type", "load_generator_instance_type", "endpoint", "concurrency", "duration_seconds", "desired_tasks_before", "running_tasks_before", "managed_instances_before", "desired_tasks_after", "running_tasks_after", "pending_tasks_after", "managed_instances_after", "requests_per_second", "total_requests", "total_responses", "transferred_bytes_per_second", "latency_p50_seconds", "latency_p75_seconds", "latency_p90_seconds", "latency_p95_seconds", "latency_p99_seconds", "http_status_counts", "unexpected_status_count", "transport_error_count"]
     writer = csv.DictWriter(f, fieldnames=fields)
     writer.writeheader()
     for test in data["tests"]:
-        row = {**{key: data.get(key, "") for key in fields}, **test, "duration_seconds": data["duration_seconds"], "connections": data["connections"]}
+        row = {**{key: data.get(key, "") for key in fields}, **test}
         row["http_status_counts"] = json.dumps(test["http_status_counts"], sort_keys=True)
         writer.writerow(row)
 PY
@@ -303,21 +383,26 @@ lines = [
     f"- Task: {data['task_cpu_units']} CPU units, {data['task_memory_mib']} MiB memory; desired count 1",
     f"- Load generator: `{data['load_generator_instance_type']}` — {data['load_generator_instance_vcpus']} vCPU, {data['load_generator_instance_memory_mib'] / 1024:g} GiB RAM",
     f"- Load tool: `{data['load_generator_tool']}`",
-    f"- Test: {data['duration_seconds']} s per endpoint, {data['connections']} concurrent workers, HTTP/1.1, 5 s request timeout",
+    f"- Autoscaling: ECS service CPU target {data['autoscaling']['target_cpu_percent']}%, min/max tasks {data['autoscaling']['min_tasks']}/{data['autoscaling']['max_tasks']}, scale-out/in cooldown {data['autoscaling']['scale_out_cooldown_seconds']}/{data['autoscaling']['scale_in_cooldown_seconds']} s",
+    f"- Load ramp: {data['load_ramp']['starting_connections']} to {data['load_ramp']['max_connections']} connections, doubling each stage, {data['load_ramp']['duration_per_step_seconds']} s per stage, {data['load_ramp']['settle_between_steps_seconds']} s scale-settle interval",
+    f"- Load tool: HTTP/1.1, 5 s per-request timeout; Oha distributes each stage across the currently running task IPs",
     f"- Network: {data['network_path']}; no ALB or NAT Gateway",
     f"- Container image: `{data['image_ref']}`",
     f"- Source commit: `{data['source_commit']}`",
     "",
     "## Results",
     "",
-    "| Endpoint | RPS | Requests | Responses | p50 | p95 | p99 | Status codes | Errors |",
-    "|---|---:|---:|---:|---:|---:|---:|---|---:|",
+    "| Concurrency | Tasks desired→after | Tasks running→after | MI hosts before→after | RPS | Requests | p50 | p95 | p99 | Status | Errors |",
+    "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
 ]
 for test in data["tests"]:
     statuses = ", ".join(f"{code}: {count:,}" for code, count in test["http_status_counts"].items())
     lines.append(
-        f"| `{test['endpoint']}` | {test['requests_per_second']:,.2f} | {test['total_requests']:,} | "
-        f"{test['total_responses']:,} | {test['latency_p50_seconds'] * 1000:.3f} ms | "
+        f"| {test['concurrency']} | {test['desired_tasks_before']}→{test['desired_tasks_after']} | "
+        f"{test['running_tasks_before']}→{test['running_tasks_after']} | "
+        f"{test['managed_instances_before']}→{test['managed_instances_after']} | "
+        f"{test['requests_per_second']:,.2f} | {test['total_requests']:,} | "
+        f"{test['latency_p50_seconds'] * 1000:.3f} ms | "
         f"{test['latency_p95_seconds'] * 1000:.3f} ms | {test['latency_p99_seconds'] * 1000:.3f} ms | "
         f"{statuses} | {test['unexpected_status_count'] + test['transport_error_count']} |"
     )

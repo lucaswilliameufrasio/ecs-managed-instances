@@ -38,6 +38,42 @@ variable "task_memory_mib" {
   type    = number
   default = 2048
 }
+variable "service_desired_count" {
+  type    = number
+  default = 0
+}
+variable "enable_service_autoscaling" {
+  type    = bool
+  default = false
+}
+variable "autoscaling_min_tasks" {
+  type    = number
+  default = 1
+}
+variable "autoscaling_max_tasks" {
+  type    = number
+  default = 8
+  validation {
+    condition     = var.autoscaling_max_tasks >= var.autoscaling_min_tasks
+    error_message = "autoscaling_max_tasks must be greater than or equal to autoscaling_min_tasks."
+  }
+}
+variable "autoscaling_target_cpu_percent" {
+  type    = number
+  default = 60
+  validation {
+    condition     = var.autoscaling_target_cpu_percent > 0 && var.autoscaling_target_cpu_percent <= 100
+    error_message = "autoscaling_target_cpu_percent must be in the range (0, 100]."
+  }
+}
+variable "autoscaling_scale_out_cooldown_seconds" {
+  type    = number
+  default = 30
+}
+variable "autoscaling_scale_in_cooldown_seconds" {
+  type    = number
+  default = 300
+}
 variable "key_name" {
   type        = string
   description = "Existing EC2 key pair for Ansible SSH"
@@ -61,9 +97,21 @@ variable "api_image_tag" {
 }
 variable "load_duration_seconds" {
   type    = number
-  default = 30
+  default = 60
 }
 variable "load_connections" {
   type    = number
   default = 64
+}
+variable "load_max_connections" {
+  type    = number
+  default = 1024
+  validation {
+    condition     = var.load_max_connections >= var.load_connections
+    error_message = "load_max_connections must be greater than or equal to load_connections."
+  }
+}
+variable "load_scale_settle_seconds" {
+  type    = number
+  default = 60
 }

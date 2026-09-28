@@ -82,34 +82,3 @@
       args:
         executable: /bin/bash
       changed_when: true
-
-    - name: Start ECS service
-      ansible.builtin.command:
-        argv:
-          - aws
-          - ecs
-          - update-service
-          - --cluster
-          - "{{ ecs_cluster }}"
-          - --service
-          - "{{ ecs_service }}"
-          - --desired-count
-          - "1"
-          - --region
-          - "{{ aws_region }}"
-      changed_when: true
-
-    - name: Wait until ECS service is stable
-      ansible.builtin.command:
-        argv:
-          - aws
-          - ecs
-          - wait
-          - services-stable
-          - --cluster
-          - "{{ ecs_cluster }}"
-          - --services
-          - "{{ ecs_service }}"
-          - --region
-          - "{{ aws_region }}"
-      changed_when: false
