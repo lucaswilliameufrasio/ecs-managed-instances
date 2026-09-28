@@ -74,12 +74,12 @@ resource "aws_ecs_capacity_provider" "managed" {
       instance_requirements {
         allowed_instance_types = [var.ecs_instance_type]
         vcpu_count {
-          min = 4
-          max = 4
+          min = var.ecs_instance_vcpus
+          max = var.ecs_instance_vcpus
         }
         memory_mib {
-          min = 16384
-          max = 16384
+          min = var.ecs_instance_memory_mib
+          max = var.ecs_instance_memory_mib
         }
       }
       network_configuration {
@@ -113,8 +113,8 @@ resource "aws_ecs_task_definition" "api" {
   family                   = var.name
   requires_compatibilities = ["MANAGED_INSTANCES"]
   network_mode             = "awsvpc"
-  cpu                      = "1024"
-  memory                   = "2048"
+  cpu                      = tostring(var.task_cpu_units)
+  memory                   = tostring(var.task_memory_mib)
   execution_role_arn       = aws_iam_role.task_execution.arn
   container_definitions = jsonencode([{
     name      = "parking-api"

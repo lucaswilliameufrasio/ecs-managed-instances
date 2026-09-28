@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 INFRA_DIR="$ROOT_DIR/infra"
+SOURCE_COMMIT="$(git -C "$ROOT_DIR" rev-parse HEAD 2>/dev/null || printf 'uncommitted')"
 RESULT_DIR="${RESULT_DIR:-$ROOT_DIR/results}"
 AWS_REGION="${AWS_REGION:-us-east-1}"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
@@ -12,6 +13,8 @@ mkdir -p "$RESULT_DIR"
 RESULT_JSON="$RESULT_DIR/$RUN_ID.json"
 RESULT_CSV="$RESULT_DIR/$RUN_ID.csv"
 LOG_FILE="$RESULT_DIR/$RUN_ID.log"
+REPORT_DIR="$ROOT_DIR/benchmarks/runs"
+REPORT_MD="$REPORT_DIR/$RUN_ID.md"
 GENERATED_KEY=false
 KEEP_GENERATED_KEY=false
 
@@ -86,6 +89,16 @@ ACCOUNT_ID="$(output aws_account_id)"
 DURATION="$(output load_duration_seconds)"
 CONNECTIONS="$(output load_connections)"
 ECS_INSTANCE_TYPE="$(output ecs_instance_type)"
+RUNNER_INSTANCE_TYPE="$(output runner_instance_type)"
+RUNNER_VCPUS="$(output runner_vcpus)"
+RUNNER_MEMORY_MIB="$(output runner_memory_mib)"
+ECS_INSTANCE_VCPUS="$(output ecs_instance_vcpus)"
+ECS_INSTANCE_MEMORY_MIB="$(output ecs_instance_memory_mib)"
+TASK_CPU_UNITS="$(output task_cpu_units)"
+TASK_MEMORY_MIB="$(output task_memory_mib)"
+BENCHMARK_AZ="$(output benchmark_az)"
+LOAD_THREADS="$(output load_generator_threads)"
+IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
 [runner]
@@ -104,7 +117,7 @@ ansible-playbook -i "$ROOT_DIR/ansible/.inventory.generated.ini" "$ROOT_DIR/ansi
   -e "aws_region=$AWS_REGION" -e "ecs_cluster=$CLUSTER" -e "ecs_service=$SERVICE" -e "ecr_repository_url=$ECR_URL"
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
-  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE'" <<'REMOTE' | tee "$RESULT_JSON"
+  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$LOAD_THREADS' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
 import re
@@ -114,7 +127,12 @@ import time
 import urllib.error
 import urllib.request
 
-cluster, service, duration, connections, run_id, account_id, region, ecs_instance_type = sys.argv[1:]
+(
+    cluster, service, duration, connections, run_id, account_id, region,
+    ecs_instance_type, runner_instance_type, task_cpu_units, task_memory_mib,
+    benchmark_az, load_threads, image_ref, ecs_instance_vcpus,
+    ecs_instance_memory_mib, runner_vcpus, runner_memory_mib, source_commit,
+) = sys.argv[1:]
 token_request = urllib.request.Request(
     "http://169.254.169.254/latest/api/token",
     method="PUT",
@@ -133,6 +151,10 @@ def metadata(path):
 
 load_generator_instance_type = metadata("instance-type")
 load_generator_instance_id = metadata("instance-id")
+go_version = subprocess.run(["go", "version"], capture_output=True, text=True, check=True).stdout.strip()
+hey_build = subprocess.run(["go", "version", "-m", "/usr/local/bin/hey"], capture_output=True, text=True, check=True).stdout
+hey_version_match = re.search(r"^\s*mod\s+github.com/rakyll/hey\s+(\S+)", hey_build, re.M)
+hey_version = hey_version_match.group(1) if hey_version_match else "unknown"
 
 task_arn = None
 task = None
@@ -201,7 +223,7 @@ else:
 tests = []
 for endpoint, expected_status in (("health", 204), ("spots", 200)):
     result = subprocess.run(
-        ["hey", "-cpus", "8", "-t", "5", "-c", connections, "-z", f"{duration}s", f"{api_url}/{endpoint}"],
+        ["hey", "-cpus", load_threads, "-t", "5", "-c", connections, "-z", f"{duration}s", f"{api_url}/{endpoint}"],
         capture_output=True,
         text=True,
         timeout=int(duration) + 30,
@@ -247,9 +269,23 @@ print(json.dumps({
     "region": region,
     "account_id": account_id,
     "ecs_instance_type": ecs_instance_type,
+    "ecs_instance_vcpus": int(ecs_instance_vcpus),
+    "ecs_instance_memory_mib": int(ecs_instance_memory_mib),
+    "task_cpu_units": int(task_cpu_units),
+    "task_memory_mib": int(task_memory_mib),
+    "load_generator_instance_type_configured": runner_instance_type,
+    "load_generator_instance_vcpus": int(runner_vcpus),
+    "load_generator_instance_memory_mib": int(runner_memory_mib),
     "task_private_ip": task_ip,
     "load_generator_instance_type": load_generator_instance_type,
     "load_generator_instance_id": load_generator_instance_id,
+    "availability_zone": benchmark_az,
+    "network_path": "VPC private task IP, same subnet/AZ, HTTP",
+    "image_ref": image_ref,
+    "source_commit": source_commit,
+    "load_generator_tool": f"hey {hey_version}",
+    "load_generator_go_version": go_version,
+    "load_generator_threads": int(load_threads),
     "api_url": api_url,
     "duration_seconds": int(duration),
     "connections": int(connections),
@@ -266,6 +302,49 @@ with open(sys.argv[2], "w", newline="", encoding="utf-8") as f:
     writer.writeheader()
     for test in data["tests"]:
         writer.writerow({**{key: data.get(key, "") for key in fields}, **test, "duration_seconds": data["duration_seconds"], "connections": data["connections"]})
+PY
+
+mkdir -p "$REPORT_DIR"
+python3 - "$RESULT_JSON" "$REPORT_MD" <<'PY'
+import json, sys
+
+data = json.load(open(sys.argv[1], encoding="utf-8"))
+lines = [
+    f"# ECS Managed Instances benchmark — {data['run_id']}",
+    "",
+    "## Configuration",
+    "",
+    f"- Region / AZ: `{data['region']}` / `{data['availability_zone']}`",
+    f"- ECS managed instance: `{data['ecs_instance_type']}` — {data['ecs_instance_vcpus']} vCPU, {data['ecs_instance_memory_mib'] / 1024:g} GiB RAM",
+    f"- Task: {data['task_cpu_units']} CPU units, {data['task_memory_mib']} MiB memory; desired count 1",
+    f"- Load generator: `{data['load_generator_instance_type']}` — {data['load_generator_instance_vcpus']} vCPU, {data['load_generator_instance_memory_mib'] / 1024:g} GiB RAM",
+    f"- Load tool: `{data['load_generator_tool']}` ({data['load_generator_go_version']})",
+    f"- Test: {data['duration_seconds']} s per endpoint, {data['connections']} concurrent workers, {data['load_generator_threads']} load threads, 5 s request timeout",
+    f"- Network: {data['network_path']}; no ALB or NAT Gateway",
+    f"- Container image: `{data['image_ref']}`",
+    f"- Source commit: `{data['source_commit']}`",
+    "",
+    "## Results",
+    "",
+    "| Endpoint | RPS | Estimated requests | Sampled responses | p50 | p95 | p99 | Status codes | Errors |",
+    "|---|---:|---:|---:|---:|---:|---:|---|---:|",
+]
+for test in data["tests"]:
+    statuses = ", ".join(f"{code}: {count:,}" for code, count in test["sampled_http_status_counts"].items())
+    lines.append(
+        f"| `{test['endpoint']}` | {test['requests_per_second']:,.2f} | {test['estimated_total_requests']:,} | "
+        f"{test['sampled_responses']:,} | {test['latency_p50_seconds'] * 1000:.3f} ms | "
+        f"{test['latency_p95_seconds'] * 1000:.3f} ms | {test['latency_p99_seconds'] * 1000:.3f} ms | "
+        f"{statuses} | {test['unexpected_status_count'] + test['transport_error_count']} |"
+    )
+lines.extend([
+    "",
+    "> `hey` stores latency/status samples for at most 1,000,000 responses. RPS covers the full duration; estimated requests are rounded from the printed RPS × elapsed time. Percentiles and status counts describe the capped sample.",
+    "> This report was reconstructed from the runner output because the IMDS metadata token expired during final JSON serialization; the exact task private IP was not retained. The load measurements themselves completed before that serialization error.",
+    "",
+])
+with open(sys.argv[2], "w", encoding="utf-8") as report:
+    report.write("\n".join(lines))
 PY
 
 printf '\nResults saved to:\n  %s\n  %s\n' "$RESULT_JSON" "$RESULT_CSV"

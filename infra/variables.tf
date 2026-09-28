@@ -10,9 +10,33 @@ variable "runner_instance_type" {
   type    = string
   default = "m9g.2xlarge"
 }
+variable "runner_vcpus" {
+  type    = number
+  default = 8
+}
+variable "runner_memory_mib" {
+  type    = number
+  default = 32768
+}
 variable "ecs_instance_type" {
   type    = string
   default = "m9g.xlarge"
+}
+variable "ecs_instance_vcpus" {
+  type    = number
+  default = 4
+}
+variable "ecs_instance_memory_mib" {
+  type    = number
+  default = 16384
+}
+variable "task_cpu_units" {
+  type    = number
+  default = 1024
+}
+variable "task_memory_mib" {
+  type    = number
+  default = 2048
 }
 variable "key_name" {
   type        = string
@@ -42,4 +66,8 @@ variable "load_duration_seconds" {
 variable "load_connections" {
   type    = number
   default = 64
+}
+variable "load_generator_threads" {
+  type    = number
+  default = 8
 }
