@@ -50,15 +50,46 @@ TOFU_VARS=(
   "-var=aws_region=$AWS_REGION"
 )
 
+output() { tofu -chdir="$INFRA_DIR" output -raw "$1"; }
+
 cleanup() {
   local status=$?
   if [[ "$APPLIED" == true && "$DESTROY_ON_EXIT" == true ]]; then
+    local cleanup_cluster="${CLUSTER:-}"
+    local cleanup_service="${SERVICE:-}"
+    if [[ -z "$cleanup_cluster" ]]; then
+      cleanup_cluster="$(tofu -chdir="$INFRA_DIR" output -raw cluster_name 2>/dev/null || true)"
+    fi
+    if [[ -z "$cleanup_service" ]]; then
+      cleanup_service="$(tofu -chdir="$INFRA_DIR" output -raw service_name 2>/dev/null || true)"
+    fi
     printf '\nDestroying benchmark infrastructure...\n'
-    tofu -chdir="$INFRA_DIR" destroy -auto-approve -input=false "${TOFU_VARS[@]}" >>"$LOG_FILE" 2>&1 || {
-      printf 'WARNING: tofu destroy failed; inspect %s and destroy manually.\n' "$LOG_FILE" >&2
-      status=1
-      KEEP_GENERATED_KEY=true
-    }
+    if ! tofu -chdir="$INFRA_DIR" destroy -auto-approve -input=false "${TOFU_VARS[@]}" >>"$LOG_FILE" 2>&1; then
+      printf 'OpenTofu destroy needs ECS cleanup recovery; forcing service scale-in and container-instance deregistration.\n' >&2
+      if [[ -n "$cleanup_cluster" ]]; then
+        aws ecs update-service --region "$AWS_REGION" --cluster "$cleanup_cluster" \
+          --service "${cleanup_service:-$cleanup_cluster}" --desired-count 0 >>"$LOG_FILE" 2>&1 || true
+      fi
+      local container_instances=""
+      if [[ -n "$cleanup_cluster" ]]; then
+        container_instances="$(aws ecs list-container-instances --region "$AWS_REGION" \
+          --cluster "$cleanup_cluster" --status ACTIVE --query 'containerInstanceArns' \
+          --output text 2>>"$LOG_FILE")" || true
+      fi
+      if [[ -n "$container_instances" && "$container_instances" != "None" ]]; then
+        for container_instance in $container_instances; do
+          aws ecs deregister-container-instance --region "$AWS_REGION" \
+            --cluster "$cleanup_cluster" --container-instance "$container_instance" \
+            --force >>"$LOG_FILE" 2>&1 || true
+        done
+      fi
+      if ! tofu -chdir="$INFRA_DIR" destroy -auto-approve -input=false -lock-timeout=60s \
+        "${TOFU_VARS[@]}" >>"$LOG_FILE" 2>&1; then
+        printf 'WARNING: tofu destroy still failed; inspect %s and clean up manually.\n' "$LOG_FILE" >&2
+        status=1
+        KEEP_GENERATED_KEY=true
+      fi
+    fi
   fi
   if [[ "$GENERATED_KEY" == true && "$KEEP_GENERATED_KEY" == false && ( "$APPLIED" == false || "$DESTROY_ON_EXIT" == true ) ]]; then
     rm -f "$SSH_KEY_PATH" "$SSH_KEY_PATH.pub"
@@ -80,7 +111,6 @@ APPLIED=true
 tofu -chdir="$INFRA_DIR" apply -auto-approve -input=false "${TOFU_VARS[@]}" \
   2>&1 | tee -a "$LOG_FILE"
 
-output() { tofu -chdir="$INFRA_DIR" output -raw "$1"; }
 RUNNER_IP="$(output runner_public_ip)"
 CLUSTER="$(output cluster_name)"
 SERVICE="$(output service_name)"

@@ -146,6 +146,9 @@ resource "aws_ecs_service" "api" {
   lifecycle {
     ignore_changes = [desired_count]
   }
+  timeouts {
+    delete = "5m"
+  }
 }
 
 resource "aws_appautoscaling_target" "ecs_service" {

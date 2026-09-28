@@ -14,7 +14,7 @@ The service starts at desired count zero. Ansible builds the Go container on the
 
 On the machine running the script: OpenTofu >= 1.8, AWS CLI plus credentials with permission to create/delete the listed EC2, VPC, ECS, ECR, IAM and Application Auto Scaling resources, Ansible, Python 3, `curl`, `ssh`, and `ssh-keygen`. Docker is installed on the remote load generator by Ansible and the image is built there.
 
-Ensure the selected region/account has quota and availability for the chosen M9g sizes and ECS Managed Instances. The account needs permission to pass the created IAM roles. The temporary SSH ingress is restricted to the caller's detected public IPv4 `/32`; set `ALLOWED_SSH_CIDR` to override it. SSH ingress cannot be omitted while this harness uses Ansible over SSH. Resources incur AWS charges while running; the script destroys them on success or failure after apply, but check AWS afterward if destroy reports an error.
+Ensure the selected region/account has quota and availability for the chosen M9g sizes and ECS Managed Instances. The account needs permission to pass the created IAM roles. The temporary SSH ingress is restricted to the caller's detected public IPv4 `/32`; set `ALLOWED_SSH_CIDR` to override it. SSH ingress cannot be omitted while this harness uses Ansible over SSH. Resources incur AWS charges while running; on teardown failure, the runner attempts to scale in/deregister ECS instances and retry OpenTofu destroy. Check AWS afterward if it still reports a cleanup error.
 
 ## Run
 
