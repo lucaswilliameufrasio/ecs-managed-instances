@@ -43,6 +43,8 @@ Edit `infra/variables.tf` to change ECS/runner instance types, connection count,
 
 Each run writes JSON/CSV/log files under ignored `results/` and a Markdown report at `benchmarks/runs/<UTC-run-id>.md`, ready to review and commit. The report includes instance/task sizing, AZ, autoscaling policy, ramp stages, tool/image/source revisions, task counts and results. Oha writes structured JSON with throughput, status counts and latency percentiles. The earlier Hey run is documented separately; Hey capped its latency/status samples at one million responses. Health checks and HTTP requests have bounded timeouts; a failed health check prints task and ECS service diagnostics before teardown.
 
+The AWS load-test policy review and completed baseline-run record are in [`docs/aws-load-test-policy.md`](docs/aws-load-test-policy.md).
+
 For apples-to-apples comparisons, record separate runs with identical settings and change only the ECS instance type. Keep task size, API image and runner type constant. For stronger results, warm up first and repeat each run several times; the harness records scaling/task/host counts but does not yet save CloudWatch CPU/memory time series or estimate AWS cost.
 
 ## Local checks
