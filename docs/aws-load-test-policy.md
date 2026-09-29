@@ -51,6 +51,17 @@ The application is a small Go `net/http` service with an in-memory counter. The 
 
 This remained a bounded, single-account application-capacity test, not a DDoS simulation. The ALB incurred billable load-balancer hours and LCU usage during the run.
 
+## Completed Go 1.27.1 internal-ALB run
+
+- Run report: [`../benchmarks/runs/20260929T230553Z.md`](../benchmarks/runs/20260929T230553Z.md)
+- Source revision: `4994144`
+- Go `1.27.1`, Oha `1.16.0`, same internal-ALB HTTP:80 → task HTTP:8080 path and continuous `120 s` concurrency ramp.
+- It reached `74.8k` req/s at 1,024 connections (`p95 65.4 ms`, `p99 78.2 ms`). All `27.8M` requests returned HTTP `200`, with zero transport errors.
+- ECS remained at one desired/running task and one Managed Instance host throughout. CloudWatch one-minute service CPU averages peaked at `99.9%`, but no scale-out was observed. This leaves ECS target-tracking response as an open diagnostic; the run does not establish the cause.
+- The earlier Go 1.24 ALB run reached `101.3k` req/s and showed two tasks at its final sample. Because that earlier stage included scale-out while this run stayed at one task, the two end-to-end totals do not isolate a Go-version regression.
+
+The run remains a bounded, single-account application-capacity test, not a DDoS simulation. It incurred ALB-hours and LCU usage while running.
+
 ## Cleanup evidence
 
-After the baseline, direct autoscaling, and internal-ALB runs, OpenTofu state was empty. AWS audits found no benchmark EC2 instances, VPCs, load balancers, target groups, ECR repositories, security groups, network interfaces, EBS volumes, IAM roles/instance profiles, autoscaling targets/policies, CloudWatch alarms/log groups, generated key pair, or task-definition revisions. ECS retains only the cluster as `INACTIVE` metadata and its capacity provider as `INACTIVE` with `DELETE_COMPLETE`; there are zero active services, tasks, or container instances, and neither is listed as active. These ECS control-plane tombstones have no running/billable resources. The direct autoscaling run needed manual ECS drain/deregistration recovery; the ALB run's automatic destroy completed. AWS billing may report already-incurred usage later.
+After the baseline, direct autoscaling, interrupted Go 1.27.1 attempt, and completed internal-ALB runs, OpenTofu state was empty. AWS audits found no benchmark EC2 instances, VPCs, load balancers, target groups, ECR repositories, security groups, network interfaces, EBS volumes, IAM roles/instance profiles, autoscaling targets/policies, CloudWatch alarms/log groups, generated key pair, or task-definition revisions. ECS retains only the cluster as `INACTIVE` metadata and its capacity provider as `INACTIVE` with `DELETE_COMPLETE`; there are zero active services, tasks, or container instances, and neither is listed as active. These ECS control-plane tombstones have no running/billable resources. The direct autoscaling run and first Go 1.27.1 attempt needed manual ECS drain/deregistration recovery; the completed rerun's destroy retry completed. AWS billing may report already-incurred usage later.
