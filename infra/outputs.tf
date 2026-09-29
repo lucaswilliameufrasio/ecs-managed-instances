@@ -18,6 +18,7 @@ output "load_duration_seconds" { value = var.load_duration_seconds }
 output "load_connections" { value = var.load_connections }
 output "load_max_connections" { value = var.load_max_connections }
 output "load_scale_settle_seconds" { value = var.load_scale_settle_seconds }
+output "cloudwatch_metric_settle_seconds" { value = var.cloudwatch_metric_settle_seconds }
 output "autoscaling_min_tasks" { value = var.autoscaling_min_tasks }
 output "autoscaling_max_tasks" { value = var.autoscaling_max_tasks }
 output "autoscaling_target_cpu_percent" { value = var.autoscaling_target_cpu_percent }

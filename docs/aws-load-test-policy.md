@@ -30,12 +30,22 @@ The application is a small Go `net/http` service with an in-memory counter. The 
 
 `hey` caps latency/status samples at one million responses. The recorded requests/s covers the full test duration; estimated request totals and sample limitations are called out in the run report. The JSON/CSV/log artifacts remain in the ignored local `results/` directory; the Markdown run report is the durable, public record.
 
-## Prepared follow-up (not yet run)
+## Completed autoscaling run
 
-The next-round code configures ECS Service Auto Scaling with CPU target tracking at `60%`, minimum `1` and maximum `8` tasks, `30 s` scale-out cooldown, and `300 s` scale-in cooldown. Oha will ramp `/spots` concurrency from `64` to `1,024`, doubling each step, for `60 s` per step with a `60 s` settle period, distributing requests among currently running tasks over private VPC IPs. The load generator remains `m9g.2xlarge`; the ECS instance type remains pinned to `m9g.xlarge`.
+- Run report: [`../benchmarks/runs/20260928T163422Z.md`](../benchmarks/runs/20260928T163422Z.md)
+- Source revision: `2531da6`
+- Oha 1.16.0 ramped `/spots` concurrency from `64` to `1,024`, doubling each step, with `60 s` load and `60 s` no-load settle per step.
+- ECS Service Auto Scaling target was `60%` CPU, minimum `1` and maximum `8` tasks, `30 s` scale-out cooldown, and `300 s` scale-in cooldown. The load generator was `m9g.2xlarge`; the ECS Managed Instance type was pinned to `m9g.xlarge`.
+- Traffic remained ordinary HTTP requests from one load generator to the operator-owned private task in the same VPC/AZ. No ALB or NAT Gateway was used.
+- The run did not scale out: desired/running tasks and Managed Instance hosts remained at one. It reached approximately `84–87k` requests/s, with p99 latency rising to approximately `82 ms` at the highest concurrency. CloudWatch one-minute service CPU averages ranged approximately `33–67%`, with maxima near `99–100%`.
+- The 60-second no-load intervals may have weakened the sustained target-tracking signal, but the run does not establish the cause of the missing scale-out.
 
-This configuration has passed local validation and an OpenTofu plan, but **has not been applied to AWS**. It adds a bounded, single-account scale-out test; it does not turn the benchmark into a DDoS simulation.
+## Prepared next attempt (not yet run)
+
+The local harness changes the ramp to five continuous `120 s` load steps at `64`, `128`, `256`, `512`, and `1,024` Oha connections, without intentional no-load gaps. It will collect one-minute ECS CPU metrics after the ramp, with a `90 s` CloudWatch metric-settle period. The autoscaling target and instance sizing remain unchanged. This is intended to provide a more sustained scaling signal and diagnostic CPU data; it does not guarantee scale-out.
+
+The revised configuration has passed local validation and an OpenTofu plan, but **has not been applied to AWS**. It remains a bounded, single-account application-capacity test and does not turn the benchmark into a DDoS simulation.
 
 ## Cleanup evidence
 
-After the completed baseline run, the OpenTofu state was empty; checks found no benchmark EC2 instances, VPC, load balancer, ECR repository, volume, or generated key pair. ECS cluster/capacity-provider records remained `INACTIVE` with zero active services/tasks. The next run must repeat the same post-destroy audit; AWS billing may report already-incurred usage later.
+After the baseline and autoscaling runs, teardown audits found empty OpenTofu state, no active benchmark EC2/VPC/load-balancer/ECR resources, and only inactive ECS metadata with no active services/tasks. The autoscaling run required manual ECS drain/deregistration recovery and a retry of OpenTofu destroy; see its run report. The next run must repeat the post-destroy audit. AWS billing may report already-incurred usage later.

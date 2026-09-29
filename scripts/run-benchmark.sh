@@ -134,6 +134,7 @@ AUTOSCALING_SCALE_IN="$(output autoscaling_scale_in_cooldown_seconds)"
 AUTOSCALING_SCALE_OUT="$(output autoscaling_scale_out_cooldown_seconds)"
 LOAD_MAX_CONNECTIONS="$(output load_max_connections)"
 LOAD_SCALE_SETTLE_SECONDS="$(output load_scale_settle_seconds)"
+CW_METRIC_SETTLE_SECONDS="$(output cloudwatch_metric_settle_seconds)"
 IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
@@ -171,7 +172,7 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP"
   "aws ecs wait services-stable --cluster '$CLUSTER' --services '$SERVICE' --region '$AWS_REGION'"
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
-  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
+  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$CW_METRIC_SETTLE_SECONDS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
 import os
@@ -179,11 +180,13 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timedelta, timezone
 import urllib.error
 import urllib.request
 
 (
     cluster, service, duration, starting_connections, max_connections, scale_settle_seconds,
+    cloudwatch_metric_settle_seconds,
     run_id, account_id, region,
     ecs_instance_type, runner_instance_type, task_cpu_units, task_memory_mib,
     benchmark_az, image_ref, ecs_instance_vcpus,
@@ -286,6 +289,7 @@ tests = []
 max_desired_observed = 0
 max_running_observed = 0
 max_managed_instances_observed = 0
+load_started_at = datetime.now(timezone.utc)
 for concurrency in steps:
     before, task_ips = ready_snapshot()
     instances_before = managed_instance_count()
@@ -322,7 +326,7 @@ for concurrency in steps:
         "endpoint": "/spots",
         "concurrency": concurrency,
         "duration_seconds": float(summary["total"]),
-        "task_ips_used": task_ips,
+        "task_targets": len(task_ips),
         "desired_tasks_before": before["desired"],
         "running_tasks_before": before["running"],
         "managed_instances_before": instances_before,
@@ -343,6 +347,24 @@ for concurrency in steps:
         "unexpected_status_count": sum(count for code, count in statuses.items() if int(code) != 200),
         "transport_error_count": transport_errors,
     })
+
+load_finished_at = datetime.now(timezone.utc)
+time.sleep(int(cloudwatch_metric_settle_seconds))
+metric_start = (load_started_at - timedelta(minutes=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
+metric_end = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
+try:
+    cpu_response = aws_json(
+        "cloudwatch", "get-metric-statistics", "--namespace", "AWS/ECS",
+        "--metric-name", "CPUUtilization",
+        "--dimensions", f"Name=ClusterName,Value={cluster}", f"Name=ServiceName,Value={service}",
+        "--start-time", metric_start, "--end-time", metric_end, "--period", "60",
+        "--statistics", "Average", "Maximum",
+    )
+    cpu_datapoints = sorted(cpu_response.get("Datapoints", []), key=lambda item: item["Timestamp"])
+    cpu_metrics_error = None
+except subprocess.CalledProcessError as error:
+    cpu_datapoints = []
+    cpu_metrics_error = error.stderr.strip() or str(error)
 
 print(json.dumps({
     "run_id": run_id,
@@ -381,6 +403,14 @@ print(json.dumps({
         "duration_per_step_seconds": int(duration),
         "settle_between_steps_seconds": int(scale_settle_seconds),
     },
+    "autoscaling_cpu_metrics": {
+        "metric_name": "CPUUtilization",
+        "namespace": "AWS/ECS",
+        "load_started_at": load_started_at.isoformat(),
+        "load_finished_at": load_finished_at.isoformat(),
+        "datapoints": cpu_datapoints,
+        "error": cpu_metrics_error,
+    },
     "tests": tests,
 }, separators=(",", ":")))
 REMOTE
@@ -389,7 +419,7 @@ python3 - "$RESULT_JSON" "$RESULT_CSV" <<'PY'
 import csv, json, sys
 data = json.load(open(sys.argv[1], encoding="utf-8"))
 with open(sys.argv[2], "w", newline="", encoding="utf-8") as f:
-    fields = ["run_id", "region", "ecs_instance_type", "load_generator_instance_type", "endpoint", "concurrency", "duration_seconds", "desired_tasks_before", "running_tasks_before", "managed_instances_before", "desired_tasks_after", "running_tasks_after", "pending_tasks_after", "managed_instances_after", "requests_per_second", "total_requests", "total_responses", "transferred_bytes_per_second", "latency_p50_seconds", "latency_p75_seconds", "latency_p90_seconds", "latency_p95_seconds", "latency_p99_seconds", "http_status_counts", "unexpected_status_count", "transport_error_count"]
+    fields = ["run_id", "region", "ecs_instance_type", "load_generator_instance_type", "endpoint", "concurrency", "duration_seconds", "task_targets", "desired_tasks_before", "running_tasks_before", "managed_instances_before", "desired_tasks_after", "running_tasks_after", "pending_tasks_after", "managed_instances_after", "requests_per_second", "total_requests", "total_responses", "transferred_bytes_per_second", "latency_p50_seconds", "latency_p75_seconds", "latency_p90_seconds", "latency_p95_seconds", "latency_p99_seconds", "http_status_counts", "unexpected_status_count", "transport_error_count"]
     writer = csv.DictWriter(f, fieldnames=fields)
     writer.writeheader()
     for test in data["tests"]:
@@ -414,21 +444,23 @@ lines = [
     f"- Load generator: `{data['load_generator_instance_type']}` — {data['load_generator_instance_vcpus']} vCPU, {data['load_generator_instance_memory_mib'] / 1024:g} GiB RAM",
     f"- Load tool: `{data['load_generator_tool']}`",
     f"- Autoscaling: ECS service CPU target {data['autoscaling']['target_cpu_percent']}%, min/max tasks {data['autoscaling']['min_tasks']}/{data['autoscaling']['max_tasks']}, scale-out/in cooldown {data['autoscaling']['scale_out_cooldown_seconds']}/{data['autoscaling']['scale_in_cooldown_seconds']} s",
-    f"- Load ramp: {data['load_ramp']['starting_connections']} to {data['load_ramp']['max_connections']} connections, doubling each stage, {data['load_ramp']['duration_per_step_seconds']} s per stage, {data['load_ramp']['settle_between_steps_seconds']} s scale-settle interval",
+    f"- Autoscaling observed: max desired/running tasks {data['autoscaling']['max_desired_tasks_observed']}/{data['autoscaling']['max_running_tasks_observed']}; max Managed Instances hosts {data['autoscaling']['max_managed_instances_observed']}",
+    f"- Load ramp: {data['load_ramp']['starting_connections']} to {data['load_ramp']['max_connections']} connections, doubling each stage, {data['load_ramp']['duration_per_step_seconds']} s per stage, {data['load_ramp']['settle_between_steps_seconds']} s settle interval",
     f"- Load tool: HTTP/1.1, 5 s per-request timeout; Oha distributes each stage across the currently running task IPs",
     f"- Network: {data['network_path']}; no ALB or NAT Gateway",
     f"- Container image: `{data['image_ref']}`",
     f"- Source commit: `{data['source_commit']}`",
+    f"- CloudWatch CPU data points captured: {len(data['autoscaling_cpu_metrics']['datapoints'])}",
     "",
     "## Results",
     "",
-    "| Concurrency | Tasks desired→after | Tasks running→after | MI hosts before→after | RPS | Requests | p50 | p95 | p99 | Status | Errors |",
-    "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
+    "| Concurrency | Targets | Tasks desired→after | Tasks running→after | MI hosts before→after | RPS | Requests | p50 | p95 | p99 | Status | Errors |",
+    "|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---:|",
 ]
 for test in data["tests"]:
     statuses = ", ".join(f"{code}: {count:,}" for code, count in test["http_status_counts"].items())
     lines.append(
-        f"| {test['concurrency']} | {test['desired_tasks_before']}→{test['desired_tasks_after']} | "
+        f"| {test['concurrency']} | {test['task_targets']} | {test['desired_tasks_before']}→{test['desired_tasks_after']} | "
         f"{test['running_tasks_before']}→{test['running_tasks_after']} | "
         f"{test['managed_instances_before']}→{test['managed_instances_after']} | "
         f"{test['requests_per_second']:,.2f} | {test['total_requests']:,} | "
@@ -436,9 +468,16 @@ for test in data["tests"]:
         f"{test['latency_p95_seconds'] * 1000:.3f} ms | {test['latency_p99_seconds'] * 1000:.3f} ms | "
         f"{statuses} | {test['unexpected_status_count'] + test['transport_error_count']} |"
     )
+if data["autoscaling_cpu_metrics"].get("datapoints"):
+    points = data["autoscaling_cpu_metrics"]["datapoints"]
+    avg_peak = max(point.get("Average", 0) for point in points)
+    max_peak = max(point.get("Maximum", 0) for point in points)
+    lines.append(f"Peak ECS service CPU: {avg_peak:.1f}% average datapoint / {max_peak:.1f}% maximum datapoint.")
+elif data["autoscaling_cpu_metrics"].get("error"):
+    lines.append(f"CloudWatch CPU metric collection failed: `{data['autoscaling_cpu_metrics']['error']}`")
 lines.extend([
     "",
-    "> Results come from Oha's JSON output; request counts, status counts and percentiles are recorded directly from that run. No separate warm-up phase is included.",
+    "> Results come from Oha's JSON output. Each stage sends load across the task IPs that were RUNNING at the start of that stage; newly scaled tasks are picked up on the next stage. No separate warm-up phase is included.",
     "",
 ])
 with open(sys.argv[2], "w", encoding="utf-8") as report:

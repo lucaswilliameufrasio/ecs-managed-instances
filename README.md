@@ -8,7 +8,7 @@ Benchmark a small Go parking API on ECS Managed Instances using a Graviton EC2 l
 - An ECS cluster, an On-Demand Managed Instances capacity provider restricted to one instance type (`m9g.xlarge` by default), task/service, CPU target-tracking Service Auto Scaling (1–8 tasks by default), IAM roles, and a temporary ECR repository.
 - A Graviton load-generator EC2 instance (`m9g.2xlarge` by default, twice the vCPU and memory of the `m9g.xlarge` ECS task host) with a narrowly scoped SSH ingress and an instance role to publish the container and start the ECS service.
 
-The service starts at desired count zero. Ansible builds the Go container on the EC2 runner and pushes it to ECR; a second OpenTofu apply enables CPU target tracking and starts the minimum task count. Oha ramps `/spots` concurrency from 64 to 1,024, doubling per step, and distributes each step across the private IPs of currently running tasks. Each step and the scale-settle interval default to 60 seconds. The autoscaler targets 60% ECS service CPU, with 1–8 tasks and 30/300-second scale-out/in cooldowns. There is no ALB or NAT Gateway, so traffic stays on the VPC path; there is no RDS/database in this API benchmark.
+The service starts at desired count zero. Ansible builds the Go container on the EC2 runner and pushes it to ECR; a second OpenTofu apply enables CPU target tracking and starts the minimum task count. Oha ramps `/spots` concurrency from 64 to 1,024, doubling each step and distributing requests across the private IPs of currently running tasks. Each stage lasts 120 seconds by default, with no intentional idle gap; if scale-out tasks are pending, the runner waits for them before beginning the next stage. The autoscaler targets 60% ECS service CPU, with 1–8 tasks and 30/300-second scale-out/in cooldowns. There is no ALB or NAT Gateway, so traffic stays on the VPC path; there is no RDS/database in this API benchmark.
 
 ## Prerequisites
 
@@ -35,7 +35,7 @@ Optional environment variables:
 | `DESTROY_ON_EXIT` | `true` | Set to `false` to keep infrastructure for debugging; run `tofu -chdir=infra destroy` manually afterward with the same variables |
 | `RESULT_DIR` | `results/` | Local location for JSON/CSV/log artifacts |
 
-Autoscaling and ramp defaults live in `infra/variables.tf`: target CPU 60%, 1–8 tasks, 64–1,024 Oha connections, and 60-second ramp/settle intervals. The run report records desired/running tasks and Managed Instance host counts at each step. Use a smaller `autoscaling_max_tasks` or `load_max_connections` for a cheaper bounded run. The autoscaling configuration is prepared but has not been applied to AWS in this change.
+Autoscaling and ramp defaults live in `infra/variables.tf`: target CPU 60%, 1–8 tasks, 64–1,024 Oha connections, 120-second continuous stages, and a 90-second wait at the end to collect delayed CloudWatch CPU datapoints. The run report records desired/running tasks and Managed Instance host counts at each step, plus service CPU datapoints. Use a smaller `autoscaling_max_tasks` or `load_max_connections` for a cheaper bounded run. The autoscaling configuration is prepared but has not been applied to AWS in this change.
 
 Edit `infra/variables.tf` to change ECS/runner instance types, connection count, or test duration. The instance type is intentionally a single explicit selection so placement does not drift between runs.
 
@@ -45,7 +45,7 @@ Each run writes JSON/CSV/log files under ignored `results/` and a Markdown repor
 
 The AWS load-test policy review and completed baseline-run record are in [`docs/aws-load-test-policy.md`](docs/aws-load-test-policy.md).
 
-For apples-to-apples comparisons, record separate runs with identical settings and change only the ECS instance type. Keep task size, API image and runner type constant. For stronger results, warm up first and repeat each run several times; the harness records scaling/task/host counts but does not yet save CloudWatch CPU/memory time series or estimate AWS cost.
+For apples-to-apples comparisons, record separate runs with identical settings and change only the ECS instance type. Keep task size, API image and runner type constant. For stronger results, warm up first and repeat each run several times; the harness records CloudWatch CPU, but not memory time series or AWS cost estimates.
 
 ## Local checks
 

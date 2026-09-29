@@ -94,6 +94,7 @@ resource "aws_iam_role_policy" "runner_ecs" {
         "ecs:ListContainerInstances",
         "ecs:ListTasks",
         "ecs:UpdateService",
+        "cloudwatch:GetMetricStatistics",
       ]
       Resource = "*"
     }]

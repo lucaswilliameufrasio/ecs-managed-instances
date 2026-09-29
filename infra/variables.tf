@@ -97,7 +97,7 @@ variable "api_image_tag" {
 }
 variable "load_duration_seconds" {
   type    = number
-  default = 60
+  default = 120
 }
 variable "load_connections" {
   type    = number
@@ -113,5 +113,9 @@ variable "load_max_connections" {
 }
 variable "load_scale_settle_seconds" {
   type    = number
-  default = 60
+  default = 0
+}
+variable "cloudwatch_metric_settle_seconds" {
+  type    = number
+  default = 90
 }
