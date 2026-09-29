@@ -82,6 +82,22 @@ func TestParkingBounds(t *testing.T) {
 	})
 }
 
+func TestPprofIsSeparateFromApplicationHandler(t *testing.T) {
+	request := httptest.NewRequest(http.MethodGet, "/debug/pprof/", nil)
+
+	applicationResponse := httptest.NewRecorder()
+	handler().ServeHTTP(applicationResponse, request)
+	if applicationResponse.Code != http.StatusNotFound {
+		t.Fatalf("application pprof route status = %d, want %d", applicationResponse.Code, http.StatusNotFound)
+	}
+
+	profileResponse := httptest.NewRecorder()
+	pprofHandler().ServeHTTP(profileResponse, request)
+	if profileResponse.Code != http.StatusOK {
+		t.Fatalf("opt-in pprof route status = %d, want %d", profileResponse.Code, http.StatusOK)
+	}
+}
+
 func TestConcurrentParkingBounds(t *testing.T) {
 	t.Run("concurrent parks stop at capacity", func(t *testing.T) {
 		occupied.Store(0)
