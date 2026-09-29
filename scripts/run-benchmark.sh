@@ -141,13 +141,15 @@ IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
 [runner]
-benchmark-runner ansible_host=$RUNNER_IP ansible_user=ec2-user ansible_ssh_private_key_file=$SSH_KEY_PATH ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new'
+benchmark-runner ansible_host=$RUNNER_IP ansible_user=ec2-user ansible_ssh_private_key_file=$SSH_KEY_PATH ansible_ssh_common_args='-o StrictHostKeyChecking=accept-new -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes'
 EOF
 chmod 600 "$ROOT_DIR/ansible/.inventory.generated.ini"
 
 printf 'Waiting for SSH on load generator %s...\n' "$RUNNER_IP"
 for attempt in $(seq 1 60); do
-  if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 "ec2-user@$RUNNER_IP" true 2>/dev/null; then break; fi
+  if ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new -o ConnectTimeout=5 \
+    -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes \
+    "ec2-user@$RUNNER_IP" true 2>/dev/null; then break; fi
   [[ "$attempt" -lt 60 ]] || { printf 'SSH did not become available.\n' >&2; exit 1; }
   sleep 10
 done
@@ -166,14 +168,17 @@ tofu -chdir="$INFRA_DIR" apply -auto-approve -input=false "${TOFU_VARS[@]}" \
   -var="autoscaling_scale_out_cooldown_seconds=$AUTOSCALING_SCALE_OUT" \
   2>&1 | tee -a "$LOG_FILE"
 
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes "ec2-user@$RUNNER_IP" \
   "aws ecs update-service --cluster '$CLUSTER' --service '$SERVICE' --desired-count '$AUTOSCALING_MIN' --region '$AWS_REGION' >/dev/null"
 
 printf 'Waiting for initial ECS task before the autoscaling ramp...\n'
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes "ec2-user@$RUNNER_IP" \
   "aws ecs wait services-stable --cluster '$CLUSTER' --services '$SERVICE' --region '$AWS_REGION'"
 
-ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
+ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new \
+  -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes "ec2-user@$RUNNER_IP" \
   "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$CW_METRIC_SETTLE_SECONDS' '$ALB_DNS_NAME' '$ALB_TARGET_GROUP_ARN' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
@@ -300,6 +305,11 @@ for concurrency in steps:
     before, task_ips = ready_snapshot()
     instances_before = managed_instance_count()
     max_managed_instances_observed = max(max_managed_instances_observed, instances_before)
+    print(
+        f"Starting /spots stage: concurrency={concurrency}, tasks={before['running']}, "
+        f"healthy_targets={len(task_ips)}",
+        file=sys.stderr, flush=True,
+    )
     url_file = None
     try:
         with tempfile.NamedTemporaryFile(mode="w", prefix="ecs-mi-oha-", suffix=".txt", delete=False) as urls:
@@ -321,9 +331,19 @@ for concurrency in steps:
     percentiles = output.get("latencyPercentiles", {})
     total_responses = sum(statuses.values())
     transport_errors = sum(int(count) for count in errors.values())
+    print(
+        f"Completed /spots stage: concurrency={concurrency}, "
+        f"rps={summary['requestsPerSec']:.0f}, responses={total_responses}",
+        file=sys.stderr, flush=True,
+    )
     time.sleep(int(scale_settle_seconds))
     after, task_ips_after = ready_snapshot(timeout_seconds=300)
     current_instances = managed_instance_count()
+    print(
+        f"Settled /spots stage: concurrency={concurrency}, desired={after['desired']}, "
+        f"running={after['running']}, healthy_targets={len(task_ips_after)}",
+        file=sys.stderr, flush=True,
+    )
     max_managed_instances_observed = max(max_managed_instances_observed, current_instances)
     max_desired_observed = max(max_desired_observed, before["desired"], after["desired"])
     max_running_observed = max(max_running_observed, before["running"], after["running"])
