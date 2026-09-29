@@ -128,6 +128,45 @@ resource "aws_ecs_task_definition" "api" {
   depends_on = [aws_iam_role_policy_attachment.task_execution]
 }
 
+resource "aws_lb" "api" {
+  name               = "${var.name}-internal"
+  internal           = true
+  load_balancer_type = "application"
+  security_groups    = [aws_security_group.alb.id]
+  subnets            = [aws_subnet.alb_a.id, aws_subnet.alb_b.id]
+}
+
+resource "aws_lb_target_group" "api" {
+  name        = "${var.name}-api"
+  port        = 8080
+  protocol    = "HTTP"
+  target_type = "ip"
+  vpc_id      = aws_vpc.benchmark.id
+
+  health_check {
+    enabled             = true
+    path                = "/health"
+    port                = "traffic-port"
+    protocol            = "HTTP"
+    matcher             = "204"
+    interval            = 15
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 2
+  }
+}
+
+resource "aws_lb_listener" "api_http" {
+  load_balancer_arn = aws_lb.api.arn
+  port              = 80
+  protocol          = "HTTP"
+
+  default_action {
+    type             = "forward"
+    target_group_arn = aws_lb_target_group.api.arn
+  }
+}
+
 resource "aws_ecs_service" "api" {
   name            = var.name
   cluster         = aws_ecs_cluster.benchmark.id
@@ -141,7 +180,12 @@ resource "aws_ecs_service" "api" {
     subnets         = [aws_subnet.public.id]
     security_groups = [aws_security_group.ecs.id]
   }
-  depends_on = [aws_ecs_cluster_capacity_providers.benchmark]
+  load_balancer {
+    target_group_arn = aws_lb_target_group.api.arn
+    container_name   = "parking-api"
+    container_port   = 8080
+  }
+  depends_on = [aws_ecs_cluster_capacity_providers.benchmark, aws_lb_listener.api_http]
 
   lifecycle {
     ignore_changes = [desired_count]

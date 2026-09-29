@@ -20,6 +20,16 @@ resource "aws_subnet" "public" {
   availability_zone       = data.aws_availability_zones.available.names[0]
   map_public_ip_on_launch = true
 }
+resource "aws_subnet" "alb_a" {
+  vpc_id            = aws_vpc.benchmark.id
+  cidr_block        = "10.42.10.0/24"
+  availability_zone = data.aws_availability_zones.available.names[0]
+}
+resource "aws_subnet" "alb_b" {
+  vpc_id            = aws_vpc.benchmark.id
+  cidr_block        = "10.42.11.0/24"
+  availability_zone = data.aws_availability_zones.available.names[1]
+}
 resource "aws_route_table" "public" {
   vpc_id = aws_vpc.benchmark.id
   route {
@@ -55,7 +65,7 @@ resource "aws_security_group" "ecs" {
     from_port       = 8080
     to_port         = 8080
     protocol        = "tcp"
-    security_groups = [aws_security_group.runner.id]
+    security_groups = [aws_security_group.alb.id]
   }
   egress {
     from_port   = 0
@@ -63,6 +73,23 @@ resource "aws_security_group" "ecs" {
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
   }
+}
+resource "aws_security_group" "alb" {
+  name_prefix = "${var.name}-alb-"
+  vpc_id      = aws_vpc.benchmark.id
+  ingress {
+    from_port       = 80
+    to_port         = 80
+    protocol        = "tcp"
+    security_groups = [aws_security_group.runner.id]
+  }
+}
+resource "aws_vpc_security_group_egress_rule" "alb_to_ecs" {
+  security_group_id            = aws_security_group.alb.id
+  referenced_security_group_id = aws_security_group.ecs.id
+  ip_protocol                  = "tcp"
+  from_port                    = 8080
+  to_port                      = 8080
 }
 
 resource "aws_iam_role" "runner" {
@@ -95,6 +122,7 @@ resource "aws_iam_role_policy" "runner_ecs" {
         "ecs:ListTasks",
         "ecs:UpdateService",
         "cloudwatch:GetMetricStatistics",
+        "elasticloadbalancing:DescribeTargetHealth",
       ]
       Resource = "*"
     }]

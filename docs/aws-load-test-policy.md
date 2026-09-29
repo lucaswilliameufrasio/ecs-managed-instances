@@ -42,9 +42,9 @@ The application is a small Go `net/http` service with an in-memory counter. The 
 
 ## Prepared next attempt (not yet run)
 
-The local harness changes the ramp to five continuous `120 s` load steps at `64`, `128`, `256`, `512`, and `1,024` Oha connections, without intentional no-load gaps. It will collect one-minute ECS CPU metrics after the ramp, with a `90 s` CloudWatch metric-settle period. The autoscaling target and instance sizing remain unchanged. This is intended to provide a more sustained scaling signal and diagnostic CPU data; it does not guarantee scale-out.
+The next run is configured to send traffic through an **internal ALB**: an HTTP listener on port `80` forwards to the ECS service's private task IPs on port `8080`, with `/health` returning `204`. The ALB uses private subnets in two AZs; ECS Managed Instances and the load generator remain in the existing single AZ. The API remains inaccessible from the public internet. The ramp uses five continuous `120 s` load steps at `64`, `128`, `256`, `512`, and `1,024` Oha connections, without intentional no-load gaps. It will collect one-minute ECS CPU metrics after the ramp, with a `90 s` CloudWatch metric-settle period. The autoscaling target and instance sizing remain unchanged. This is intended to provide a more sustained scaling signal and diagnostic CPU data; it does not guarantee scale-out.
 
-The revised configuration has passed local validation and an OpenTofu plan, but **has not been applied to AWS**. It remains a bounded, single-account application-capacity test and does not turn the benchmark into a DDoS simulation.
+The revised configuration **has not yet been applied to AWS**. It remains a bounded, single-account application-capacity test and does not turn the benchmark into a DDoS simulation. The ALB adds billable load-balancer hours and LCU usage for the duration of the run.
 
 ## Cleanup evidence
 

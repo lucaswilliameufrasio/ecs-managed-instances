@@ -135,6 +135,8 @@ AUTOSCALING_SCALE_OUT="$(output autoscaling_scale_out_cooldown_seconds)"
 LOAD_MAX_CONNECTIONS="$(output load_max_connections)"
 LOAD_SCALE_SETTLE_SECONDS="$(output load_scale_settle_seconds)"
 CW_METRIC_SETTLE_SECONDS="$(output cloudwatch_metric_settle_seconds)"
+ALB_DNS_NAME="$(output alb_dns_name)"
+ALB_TARGET_GROUP_ARN="$(output alb_target_group_arn)"
 IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
@@ -172,7 +174,7 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP"
   "aws ecs wait services-stable --cluster '$CLUSTER' --services '$SERVICE' --region '$AWS_REGION'"
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new "ec2-user@$RUNNER_IP" \
-  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$CW_METRIC_SETTLE_SECONDS' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
+  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$CW_METRIC_SETTLE_SECONDS' '$ALB_DNS_NAME' '$ALB_TARGET_GROUP_ARN' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
 import os
@@ -186,7 +188,7 @@ import urllib.request
 
 (
     cluster, service, duration, starting_connections, max_connections, scale_settle_seconds,
-    cloudwatch_metric_settle_seconds,
+    cloudwatch_metric_settle_seconds, alb_dns_name, alb_target_group_arn,
     run_id, account_id, region,
     ecs_instance_type, runner_instance_type, task_cpu_units, task_memory_mib,
     benchmark_az, image_ref, ecs_instance_vcpus,
@@ -268,11 +270,15 @@ def ready_snapshot(timeout_seconds=300):
     while time.monotonic() < deadline:
         last = service_state()
         ips = running_task_ips()
-        if last["desired"] > 0 and last["running"] >= last["desired"] and last["pending"] == 0 and len(ips) >= last["running"]:
-            for task_ip in ips:
-                with urllib.request.urlopen(f"http://{task_ip}:8080/health", timeout=3) as health:
-                    if health.status != 204:
-                        raise RuntimeError(f"health check for {task_ip} returned {health.status}")
+        healthy_targets = aws_json(
+            "elbv2", "describe-target-health", "--target-group-arn", alb_target_group_arn
+        ).get("TargetHealthDescriptions", [])
+        healthy_count = sum(target.get("TargetHealth", {}).get("State") == "healthy" for target in healthy_targets)
+        if (last["desired"] > 0 and last["running"] >= last["desired"] and last["pending"] == 0
+                and len(ips) >= last["running"] and healthy_count >= last["running"]):
+            with urllib.request.urlopen(f"http://{alb_dns_name}/health", timeout=5) as health:
+                if health.status != 204:
+                    raise RuntimeError(f"internal ALB health endpoint returned {health.status}")
             return last, ips
         time.sleep(5)
     raise TimeoutError(f"service did not become ready within {timeout_seconds}s; last state={last}")
@@ -298,8 +304,7 @@ for concurrency in steps:
     try:
         with tempfile.NamedTemporaryFile(mode="w", prefix="ecs-mi-oha-", suffix=".txt", delete=False) as urls:
             url_file = urls.name
-            for task_ip in task_ips:
-                urls.write(f"http://{task_ip}:8080/spots\n")
+            urls.write(f"http://{alb_dns_name}/spots\n")
         result = subprocess.run(
             ["oha", "--no-tui", "-w", "--http-version", "1.1", "--output-format", "json",
              "-t", "5s", "-c", str(concurrency), "-z", f"{duration}s", "--urls-from-file", url_file],
@@ -381,7 +386,17 @@ print(json.dumps({
     "load_generator_instance_type": load_generator_instance_type,
     "load_generator_instance_id": load_generator_instance_id,
     "availability_zone": benchmark_az,
-    "network_path": "VPC private task IP, same subnet/AZ, HTTP",
+    "network_path": "load generator -> private internal ALB -> private ECS task IP, HTTP",
+    "ingress": {
+        "type": "internal-application-load-balancer",
+        "scheme": "internal",
+        "listener_protocol": "HTTP",
+        "listener_port": 80,
+        "target_protocol": "HTTP",
+        "target_port": 8080,
+        "dns_name": alb_dns_name,
+        "availability_zones": 2,
+    },
     "image_ref": image_ref,
     "source_commit": source_commit,
     "load_generator_tool": oha_version,
@@ -447,7 +462,8 @@ lines = [
     f"- Autoscaling observed: max desired/running tasks {data['autoscaling']['max_desired_tasks_observed']}/{data['autoscaling']['max_running_tasks_observed']}; max Managed Instances hosts {data['autoscaling']['max_managed_instances_observed']}",
     f"- Load ramp: {data['load_ramp']['starting_connections']} to {data['load_ramp']['max_connections']} connections, doubling each stage, {data['load_ramp']['duration_per_step_seconds']} s per stage, {data['load_ramp']['settle_between_steps_seconds']} s settle interval",
     f"- Load tool: HTTP/1.1, 5 s per-request timeout; Oha distributes each stage across the currently running task IPs",
-    f"- Network: {data['network_path']}; no ALB or NAT Gateway",
+    f"- Ingress: internal ALB HTTP:{data['ingress']['listener_port']} -> task HTTP:{data['ingress']['target_port']} across {data['ingress']['availability_zones']} AZs",
+    f"- Network: {data['network_path']}; no NAT Gateway",
     f"- Container image: `{data['image_ref']}`",
     f"- Source commit: `{data['source_commit']}`",
     f"- CloudWatch CPU data points captured: {len(data['autoscaling_cpu_metrics']['datapoints'])}",
