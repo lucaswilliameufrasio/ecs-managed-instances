@@ -461,7 +461,7 @@ lines = [
     f"- Autoscaling: ECS service CPU target {data['autoscaling']['target_cpu_percent']}%, min/max tasks {data['autoscaling']['min_tasks']}/{data['autoscaling']['max_tasks']}, scale-out/in cooldown {data['autoscaling']['scale_out_cooldown_seconds']}/{data['autoscaling']['scale_in_cooldown_seconds']} s",
     f"- Autoscaling observed: max desired/running tasks {data['autoscaling']['max_desired_tasks_observed']}/{data['autoscaling']['max_running_tasks_observed']}; max Managed Instances hosts {data['autoscaling']['max_managed_instances_observed']}",
     f"- Load ramp: {data['load_ramp']['starting_connections']} to {data['load_ramp']['max_connections']} connections, doubling each stage, {data['load_ramp']['duration_per_step_seconds']} s per stage, {data['load_ramp']['settle_between_steps_seconds']} s settle interval",
-    f"- Load tool: HTTP/1.1, 5 s per-request timeout; Oha distributes each stage across the currently running task IPs",
+    f"- Load tool: HTTP/1.1, 5 s per-request timeout; the ALB distributes requests across healthy task targets",
     f"- Ingress: internal ALB HTTP:{data['ingress']['listener_port']} -> task HTTP:{data['ingress']['target_port']} across {data['ingress']['availability_zones']} AZs",
     f"- Network: {data['network_path']}; no NAT Gateway",
     f"- Container image: `{data['image_ref']}`",
@@ -493,7 +493,7 @@ elif data["autoscaling_cpu_metrics"].get("error"):
     lines.append(f"CloudWatch CPU metric collection failed: `{data['autoscaling_cpu_metrics']['error']}`")
 lines.extend([
     "",
-    "> Results come from Oha's JSON output. Each stage sends load across the task IPs that were RUNNING at the start of that stage; newly scaled tasks are picked up on the next stage. No separate warm-up phase is included.",
+    "> Results come from Oha's JSON output. Requests go through the ALB and are distributed across healthy targets; tasks that become healthy during a stage can receive traffic immediately. No separate warm-up phase is included.",
     "",
 ])
 with open(sys.argv[2], "w", encoding="utf-8") as report:

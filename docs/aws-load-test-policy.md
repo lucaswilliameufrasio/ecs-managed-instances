@@ -40,12 +40,17 @@ The application is a small Go `net/http` service with an in-memory counter. The 
 - The run did not scale out: desired/running tasks and Managed Instance hosts remained at one. It reached approximately `84–87k` requests/s, with p99 latency rising to approximately `82 ms` at the highest concurrency. CloudWatch one-minute service CPU averages ranged approximately `33–67%`, with maxima near `99–100%`.
 - The 60-second no-load intervals may have weakened the sustained target-tracking signal, but the run does not establish the cause of the missing scale-out.
 
-## Prepared next attempt (not yet run)
+## Completed internal-ALB autoscaling run
 
-The next run is configured to send traffic through an **internal ALB**: an HTTP listener on port `80` forwards to the ECS service's private task IPs on port `8080`, with `/health` returning `204`. The ALB uses private subnets in two AZs; ECS Managed Instances and the load generator remain in the existing single AZ. The API remains inaccessible from the public internet. The ramp uses five continuous `120 s` load steps at `64`, `128`, `256`, `512`, and `1,024` Oha connections, without intentional no-load gaps. It will collect one-minute ECS CPU metrics after the ramp, with a `90 s` CloudWatch metric-settle period. The autoscaling target and instance sizing remain unchanged. This is intended to provide a more sustained scaling signal and diagnostic CPU data; it does not guarantee scale-out.
+- Run report: [`../benchmarks/runs/20260929T141726Z.md`](../benchmarks/runs/20260929T141726Z.md)
+- Source revision: `ff383c9`
+- Traffic entered an **internal ALB** on HTTP port `80`, forwarding to ECS private task IPs on port `8080`. The ALB used private subnets in two AZs; ECS Managed Instances and the load generator remained in `us-east-1a`. The API was not exposed to the public internet.
+- Oha ramped `/spots` through five continuous `120 s` stages at `64`, `128`, `256`, `512`, and `1,024` concurrent connections. The ECS CPU target was `60%`, min/max task counts were `1/8`, with `30/300 s` scale-out/in cooldowns.
+- The run scaled from one to two ECS tasks by the end of the highest-concurrency stage; Managed Instance host count remained one. Throughput rose from `15.1k` requests/s at 64 connections to `101.3k` at 1,024. All `34.4M` requests returned HTTP `200`, with zero transport errors. At 1,024 connections, p95 was `76.4 ms` and p99 was `81.9 ms`.
+- ECS service CPU one-minute averages peaked at approximately `99.9%` (maximum datapoint `100%`). This shows the sustained ramp produced the high CPU signal missing from the prior run, with scale-out observable by the final stage.
 
-The revised configuration **has not yet been applied to AWS**. It remains a bounded, single-account application-capacity test and does not turn the benchmark into a DDoS simulation. The ALB adds billable load-balancer hours and LCU usage for the duration of the run.
+This remained a bounded, single-account application-capacity test, not a DDoS simulation. The ALB incurred billable load-balancer hours and LCU usage during the run.
 
 ## Cleanup evidence
 
-After the baseline and autoscaling runs, teardown audits found empty OpenTofu state, no active benchmark EC2/VPC/load-balancer/ECR resources, and only inactive ECS metadata with no active services/tasks. The autoscaling run required manual ECS drain/deregistration recovery and a retry of OpenTofu destroy; see its run report. The next run must repeat the post-destroy audit. AWS billing may report already-incurred usage later.
+After the baseline, direct autoscaling, and internal-ALB runs, OpenTofu state was empty. AWS audits found no benchmark EC2 instances, VPCs, load balancers, target groups, ECR repositories, security groups, network interfaces, EBS volumes, IAM roles/instance profiles, autoscaling targets/policies, CloudWatch alarms/log groups, generated key pair, or task-definition revisions. ECS retains only the cluster as `INACTIVE` metadata and its capacity provider as `INACTIVE` with `DELETE_COMPLETE`; there are zero active services, tasks, or container instances, and neither is listed as active. These ECS control-plane tombstones have no running/billable resources. The direct autoscaling run needed manual ECS drain/deregistration recovery; the ALB run's automatic destroy completed. AWS billing may report already-incurred usage later.
