@@ -13,6 +13,7 @@ mkdir -p "$RESULT_DIR"
 RESULT_JSON="$RESULT_DIR/$RUN_ID.json"
 RESULT_CSV="$RESULT_DIR/$RUN_ID.csv"
 LOG_FILE="$RESULT_DIR/$RUN_ID.log"
+APP_LOG_FILE="$RESULT_DIR/$RUN_ID-app-logs.json"
 REPORT_DIR="$ROOT_DIR/benchmarks/runs"
 REPORT_MD="$REPORT_DIR/$RUN_ID.md"
 GENERATED_KEY=false
@@ -44,6 +45,7 @@ if [[ "$GENERATED_KEY" == true ]]; then
 fi
 TOFU_VARS=(
   "-var=key_name=$KEY_NAME"
+  "-var=benchmark_run_id=$RUN_ID"
   "-var=create_key_pair=$CREATE_KEY_PAIR"
   "-var=ssh_public_key_path=$SSH_KEY_PATH.pub"
   "-var=allowed_ssh_cidr=$ALLOWED_SSH_CIDR"
@@ -51,6 +53,25 @@ TOFU_VARS=(
 )
 
 output() { tofu -chdir="$INFRA_DIR" output -raw "$1"; }
+
+archive_application_logs() {
+  local log_group="${LOG_GROUP_NAME:-}"
+  local archive_tmp="$APP_LOG_FILE.tmp"
+  if [[ -z "$log_group" ]]; then
+    log_group="$(tofu -chdir="$INFRA_DIR" output -raw app_log_group_name 2>/dev/null || true)"
+  fi
+  [[ -n "$log_group" ]] || return 0
+
+  if aws logs filter-log-events --region "$AWS_REGION" --log-group-name "$log_group" \
+    --output json >"$archive_tmp" 2>>"$LOG_FILE"; then
+    mv "$archive_tmp" "$APP_LOG_FILE"
+    printf 'Archived benchmark application logs to %s\n' "$APP_LOG_FILE"
+  else
+    rm -f "$archive_tmp"
+    printf 'WARNING: could not archive CloudWatch logs for %s; retention is seven days.\n' \
+      "$log_group" >&2
+  fi
+}
 
 cleanup() {
   local status=$?
@@ -63,6 +84,7 @@ cleanup() {
     if [[ -z "$cleanup_service" ]]; then
       cleanup_service="$(tofu -chdir="$INFRA_DIR" output -raw service_name 2>/dev/null || true)"
     fi
+    archive_application_logs
     printf '\nDestroying benchmark infrastructure...\n'
     if ! tofu -chdir="$INFRA_DIR" destroy -auto-approve -input=false "${TOFU_VARS[@]}" >>"$LOG_FILE" 2>&1; then
       printf 'OpenTofu destroy needs ECS cleanup recovery; forcing service scale-in and container-instance deregistration.\n' >&2
@@ -83,6 +105,7 @@ cleanup() {
             --force >>"$LOG_FILE" 2>&1 || true
         done
       fi
+      archive_application_logs
       if ! tofu -chdir="$INFRA_DIR" destroy -auto-approve -input=false -lock-timeout=60s \
         "${TOFU_VARS[@]}" >>"$LOG_FILE" 2>&1; then
         printf 'WARNING: tofu destroy still failed; inspect %s and clean up manually.\n' "$LOG_FILE" >&2
@@ -90,6 +113,8 @@ cleanup() {
         KEEP_GENERATED_KEY=true
       fi
     fi
+  elif [[ "$APPLIED" == true ]]; then
+    archive_application_logs
   fi
   if [[ "$GENERATED_KEY" == true && "$KEEP_GENERATED_KEY" == false && ( "$APPLIED" == false || "$DESTROY_ON_EXIT" == true ) ]]; then
     rm -f "$SSH_KEY_PATH" "$SSH_KEY_PATH.pub"
@@ -137,6 +162,7 @@ LOAD_SCALE_SETTLE_SECONDS="$(output load_scale_settle_seconds)"
 CW_METRIC_SETTLE_SECONDS="$(output cloudwatch_metric_settle_seconds)"
 ALB_DNS_NAME="$(output alb_dns_name)"
 ALB_TARGET_GROUP_ARN="$(output alb_target_group_arn)"
+LOG_GROUP_NAME="$(output app_log_group_name)"
 IMAGE_REF="$ECR_URL:benchmark"
 
 cat > "$ROOT_DIR/ansible/.inventory.generated.ini" <<EOF
@@ -179,7 +205,7 @@ ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new \
 
 ssh -i "$SSH_KEY_PATH" -o StrictHostKeyChecking=accept-new \
   -o ServerAliveInterval=30 -o ServerAliveCountMax=10 -o TCPKeepAlive=yes "ec2-user@$RUNNER_IP" \
-  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$CW_METRIC_SETTLE_SECONDS' '$ALB_DNS_NAME' '$ALB_TARGET_GROUP_ARN' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
+  "python3 - '$CLUSTER' '$SERVICE' '$DURATION' '$CONNECTIONS' '$LOAD_MAX_CONNECTIONS' '$LOAD_SCALE_SETTLE_SECONDS' '$CW_METRIC_SETTLE_SECONDS' '$ALB_DNS_NAME' '$ALB_TARGET_GROUP_ARN' '$LOG_GROUP_NAME' '$RUN_ID' '$ACCOUNT_ID' '$AWS_REGION' '$ECS_INSTANCE_TYPE' '$RUNNER_INSTANCE_TYPE' '$TASK_CPU_UNITS' '$TASK_MEMORY_MIB' '$BENCHMARK_AZ' '$IMAGE_REF' '$ECS_INSTANCE_VCPUS' '$ECS_INSTANCE_MEMORY_MIB' '$RUNNER_VCPUS' '$RUNNER_MEMORY_MIB' '$SOURCE_COMMIT' '$AUTOSCALING_MIN' '$AUTOSCALING_MAX' '$AUTOSCALING_CPU' '$AUTOSCALING_SCALE_IN' '$AUTOSCALING_SCALE_OUT'" <<'REMOTE' | tee "$RESULT_JSON"
 import ipaddress
 import json
 import os
@@ -193,7 +219,7 @@ import urllib.request
 
 (
     cluster, service, duration, starting_connections, max_connections, scale_settle_seconds,
-    cloudwatch_metric_settle_seconds, alb_dns_name, alb_target_group_arn,
+    cloudwatch_metric_settle_seconds, alb_dns_name, alb_target_group_arn, app_log_group_name,
     run_id, account_id, region,
     ecs_instance_type, runner_instance_type, task_cpu_units, task_memory_mib,
     benchmark_az, image_ref, ecs_instance_vcpus,
@@ -466,6 +492,12 @@ print(json.dumps({
     "image_ref": image_ref,
     "source_commit": source_commit,
     "load_generator_tool": oha_version,
+    "application_logs": {
+        "provider": "CloudWatch Logs",
+        "log_group": app_log_group_name,
+        "retention_days": 7,
+        "local_archive_filename": f"{run_id}-app-logs.json",
+    },
     "autoscaling": {
         "metric": "ECSServiceAverageCPUUtilization",
         "target_cpu_percent": float(autoscaling_target_cpu),
@@ -543,6 +575,7 @@ lines = [
     f"- Network: {data['network_path']}; no NAT Gateway",
     f"- Container image: `{data['image_ref']}`",
     f"- Source commit: `{data['source_commit']}`",
+    f"- App logs: CloudWatch group `{data['application_logs']['log_group']}` (7-day retention); local archive `results/{data['application_logs']['local_archive_filename']}`",
     f"- CloudWatch CPU data points captured: {len(data['autoscaling_cpu_metrics']['datapoints'])}",
     "",
     "## Results",

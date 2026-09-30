@@ -6,6 +6,15 @@ variable "name" {
   type    = string
   default = "ecs-mi-benchmark"
 }
+variable "benchmark_run_id" {
+  type        = string
+  description = "Unique suffix for per-run resources such as the application log group"
+  default     = "manual"
+  validation {
+    condition     = can(regex("^[A-Za-z0-9_.-]+$", var.benchmark_run_id))
+    error_message = "benchmark_run_id may contain only letters, numbers, underscores, periods, and hyphens."
+  }
+}
 variable "runner_instance_type" {
   type    = string
   default = "m9g.2xlarge"

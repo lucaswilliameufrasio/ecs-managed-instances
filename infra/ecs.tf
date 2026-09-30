@@ -7,6 +7,11 @@ resource "aws_ecr_repository" "api" {
   }
 }
 
+resource "aws_cloudwatch_log_group" "api" {
+  name              = "/ecs/${var.name}/${var.benchmark_run_id}"
+  retention_in_days = 7
+}
+
 resource "aws_ecs_cluster" "benchmark" {
   name = var.name
 }
@@ -120,6 +125,15 @@ resource "aws_ecs_task_definition" "api" {
     name      = "parking-api"
     image     = "${aws_ecr_repository.api.repository_url}:${var.api_image_tag}"
     essential = true
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-create-group"  = "false"
+        "awslogs-group"         = aws_cloudwatch_log_group.api.name
+        "awslogs-region"        = var.aws_region
+        "awslogs-stream-prefix" = "parking-api"
+      }
+    }
     portMappings = [{
       containerPort = 8080
       protocol      = "tcp"
