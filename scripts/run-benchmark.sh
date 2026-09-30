@@ -374,7 +374,53 @@ for concurrency in steps:
     })
 
 load_finished_at = datetime.now(timezone.utc)
-time.sleep(int(cloudwatch_metric_settle_seconds))
+desired_max_during_load = max_desired_observed
+running_max_during_load = max_running_observed
+post_load_observations = []
+post_load_max_desired = 0
+post_load_max_running = 0
+post_load_max_managed_instances = 0
+post_load_seconds = int(cloudwatch_metric_settle_seconds)
+post_load_deadline = time.monotonic() + post_load_seconds
+while True:
+    current_state = service_state()
+    current_task_ips = running_task_ips()
+    target_health = aws_json(
+        "elbv2", "describe-target-health", "--target-group-arn", alb_target_group_arn
+    ).get("TargetHealthDescriptions", [])
+    healthy_target_count = sum(
+        target.get("TargetHealth", {}).get("State") == "healthy"
+        for target in target_health
+    )
+    current_hosts = managed_instance_count()
+    observation = {
+        "observed_at": datetime.now(timezone.utc).isoformat(),
+        "elapsed_seconds": round(post_load_seconds - max(0, post_load_deadline - time.monotonic()), 1),
+        "desired_tasks": current_state["desired"],
+        "running_tasks": current_state["running"],
+        "pending_tasks": current_state["pending"],
+        "running_task_ips": len(current_task_ips),
+        "healthy_alb_targets": healthy_target_count,
+        "managed_instances": current_hosts,
+    }
+    post_load_observations.append(observation)
+    post_load_max_desired = max(post_load_max_desired, current_state["desired"])
+    post_load_max_running = max(post_load_max_running, current_state["running"])
+    post_load_max_managed_instances = max(post_load_max_managed_instances, current_hosts)
+    max_desired_observed = max(max_desired_observed, current_state["desired"])
+    max_running_observed = max(max_running_observed, current_state["running"])
+    max_managed_instances_observed = max(max_managed_instances_observed, current_hosts)
+    print(
+        f"Post-load scaling watch: desired={current_state['desired']}, "
+        f"running={current_state['running']}, pending={current_state['pending']}, "
+        f"healthy_targets={healthy_target_count}",
+        file=sys.stderr, flush=True,
+    )
+    remaining = post_load_deadline - time.monotonic()
+    if remaining <= 0:
+        break
+    time.sleep(min(10, remaining))
+
 metric_start = (load_started_at - timedelta(minutes=1)).isoformat(timespec="seconds").replace("+00:00", "Z")
 metric_end = datetime.now(timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z")
 try:
@@ -430,6 +476,16 @@ print(json.dumps({
         "max_desired_tasks_observed": max_desired_observed,
         "max_running_tasks_observed": max_running_observed,
         "max_managed_instances_observed": max_managed_instances_observed,
+        "max_desired_tasks_during_load": desired_max_during_load,
+        "max_running_tasks_during_load": running_max_during_load,
+        "max_desired_tasks_post_load": post_load_max_desired,
+        "max_running_tasks_post_load": post_load_max_running,
+        "max_managed_instances_post_load": post_load_max_managed_instances,
+    },
+    "post_load_scaling_observation": {
+        "duration_seconds": post_load_seconds,
+        "sample_interval_seconds": 10,
+        "observations": post_load_observations,
     },
     "load_ramp": {
         "starting_connections": int(starting_connections),
@@ -479,7 +535,8 @@ lines = [
     f"- Load generator: `{data['load_generator_instance_type']}` — {data['load_generator_instance_vcpus']} vCPU, {data['load_generator_instance_memory_mib'] / 1024:g} GiB RAM",
     f"- Load tool: `{data['load_generator_tool']}`",
     f"- Autoscaling: ECS service CPU target {data['autoscaling']['target_cpu_percent']}%, min/max tasks {data['autoscaling']['min_tasks']}/{data['autoscaling']['max_tasks']}, scale-out/in cooldown {data['autoscaling']['scale_out_cooldown_seconds']}/{data['autoscaling']['scale_in_cooldown_seconds']} s",
-    f"- Autoscaling observed: max desired/running tasks {data['autoscaling']['max_desired_tasks_observed']}/{data['autoscaling']['max_running_tasks_observed']}; max Managed Instances hosts {data['autoscaling']['max_managed_instances_observed']}",
+    f"- Autoscaling high-water (load + post-load watch): desired/running tasks {data['autoscaling']['max_desired_tasks_observed']}/{data['autoscaling']['max_running_tasks_observed']}; max Managed Instances hosts {data['autoscaling']['max_managed_instances_observed']}",
+    f"- During load max desired/running tasks: {data['autoscaling']['max_desired_tasks_during_load']}/{data['autoscaling']['max_running_tasks_during_load']}; during the {data['post_load_scaling_observation']['duration_seconds']} s post-load watch: max desired/running {data['autoscaling']['max_desired_tasks_post_load']}/{data['autoscaling']['max_running_tasks_post_load']} across {len(data['post_load_scaling_observation']['observations'])} snapshots",
     f"- Load ramp: {data['load_ramp']['starting_connections']} to {data['load_ramp']['max_connections']} connections, doubling each stage, {data['load_ramp']['duration_per_step_seconds']} s per stage, {data['load_ramp']['settle_between_steps_seconds']} s settle interval",
     f"- Load tool: HTTP/1.1, 5 s per-request timeout; the ALB distributes requests across healthy task targets",
     f"- Ingress: internal ALB HTTP:{data['ingress']['listener_port']} -> task HTTP:{data['ingress']['target_port']} across {data['ingress']['availability_zones']} AZs",
