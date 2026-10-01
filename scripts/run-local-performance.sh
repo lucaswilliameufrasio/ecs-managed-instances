@@ -115,12 +115,20 @@ run_oha() {
 start_api() {
   local gomaxprocs="$1"
   local enable_pprof="${2:-0}"
-  local -a app_env=("GOMAXPROCS=$gomaxprocs" "LISTEN_ADDRESS=127.0.0.1:$PORT")
+  local -a app_env=("LISTEN_ADDRESS=127.0.0.1:$PORT")
+  if [[ "$gomaxprocs" != "auto" ]]; then
+    app_env+=("GOMAXPROCS=$gomaxprocs")
+  fi
   if [[ "$enable_pprof" == "1" ]]; then
     app_env+=("ENABLE_PPROF=1" "PPROF_ADDRESS=127.0.0.1:$PPROF_PORT")
   fi
-  taskset -c "$APP_CPUS" env "${app_env[@]}" "$APP_BINARY" \
-    >"$RAW_DIR/api-gomaxprocs-${gomaxprocs}.log" 2>&1 &
+  if [[ "$gomaxprocs" == "auto" ]]; then
+    taskset -c "$APP_CPUS" env -u GOMAXPROCS "${app_env[@]}" "$APP_BINARY" \
+      >"$RAW_DIR/api-gomaxprocs-${gomaxprocs}.log" 2>&1 &
+  else
+    taskset -c "$APP_CPUS" env "${app_env[@]}" "$APP_BINARY" \
+      >"$RAW_DIR/api-gomaxprocs-${gomaxprocs}.log" 2>&1 &
+  fi
   APP_PID=$!
 }
 
@@ -251,7 +259,11 @@ done
 
 # Capture an application-level Go CPU profile under real HTTP load in a separate
 # instrumented process so pprof sampling does not affect the throughput sweep.
-start_api 4 1
+PROFILE_GOMAXPROCS=4
+if [[ "$GOMAXPROCS_LEVELS" == "auto" ]]; then
+  PROFILE_GOMAXPROCS=auto
+fi
+start_api "$PROFILE_GOMAXPROCS" 1
 ready=false
 for attempt in $(seq 1 60); do
   if curl --fail --silent "http://127.0.0.1:${PORT}/health" >/dev/null && \
@@ -263,7 +275,7 @@ for attempt in $(seq 1 60); do
 done
 if [[ "$ready" != true ]]; then
   python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text())' \
-    "$RAW_DIR/api-gomaxprocs-4.log" >&2 || true
+    "$RAW_DIR/api-gomaxprocs-${PROFILE_GOMAXPROCS}.log" >&2 || true
   printf 'Profile-enabled local API did not become ready.\n' >&2
   exit 1
 fi
@@ -365,6 +377,16 @@ bpftrace_status = bpftrace_version
 if bpftrace_errors:
     bpftrace_status += "; probe blocked: " + "; ".join(sorted(set(bpftrace_errors)))
 
+effective_gomaxprocs = {}
+for path in glob.glob(os.path.join(raw_dir, "api-gomaxprocs-*.log")):
+    run_setting = os.path.basename(path).removesuffix(".log").removeprefix("api-gomaxprocs-")
+    with open(path, encoding="utf-8", errors="replace") as app_log:
+        for line in app_log:
+            match = re.search(r"runtime GOMAXPROCS=(\d+)", line)
+            if match:
+                effective_gomaxprocs[run_setting] = match.group(1)
+                break
+
 handler_benchmarks = {}
 benchmark_pattern = re.compile(
     r"^(BenchmarkHandler/\S+)\s+\d+\s+([\d.]+) ns/op\s+"
@@ -407,7 +429,7 @@ lines = [
     f"- perf: `{perf_version}`; `perf_event_paranoid={perf_paranoid}`",
     f"- bpftrace: `{bpftrace_status}`",
     f"- Native app pinned to CPUs `{app_cpus}`; Oha pinned to CPUs `{oha_cpus}`; direct loopback HTTP/1.1, no Docker network or ALB",
-    f"- Oha: 8 worker threads; GOMAXPROCS levels `{gomaxprocs_levels}`",
+    f"- Oha: 8 worker threads; requested GOMAXPROCS levels `{gomaxprocs_levels}`; runtime values `{effective_gomaxprocs}`",
     f"- Sweep: `{concurrency_levels}` connections, {duration}s per sample, {repeats} repeats, after a 5s warm-up",
     "",
     "## HTTP throughput curve",
@@ -415,7 +437,14 @@ lines = [
     "| Endpoint | GOMAXPROCS | Connections | Median RPS | Median p95 | Median p99 | Errors (total) |",
     "|---|---:|---:|---:|---:|---:|---:|",
 ]
-for (endpoint, gomaxprocs, concurrency), samples in sorted(groups.items(), key=lambda item: (item[0][0], int(item[0][1]), item[0][2])):
+for (endpoint, gomaxprocs, concurrency), samples in sorted(
+    groups.items(),
+    key=lambda item: (
+        item[0][0], item[0][1] == "auto",
+        int(item[0][1]) if item[0][1] != "auto" else 0,
+        item[0][2],
+    ),
+):
     lines.append(
         f"| `/{endpoint}` | {gomaxprocs} | {concurrency} | "
         f"{statistics.median(s['rps'] for s in samples):,.0f} | "
@@ -451,7 +480,14 @@ lines.extend([
     "| Process | Endpoint | GOMAXPROCS | Mean CPU | Peak CPU | Peak RSS |",
     "|---|---|---:|---:|---:|---:|",
 ])
-for (process_name, endpoint, gomaxprocs), samples in sorted(process_usage.items(), key=lambda item: (item[0][0], item[0][1], int(item[0][2]))):
+for (process_name, endpoint, gomaxprocs), samples in sorted(
+    process_usage.items(),
+    key=lambda item: (
+        item[0][0], item[0][1],
+        int(item[0][2]) if item[0][2] != "auto" else 0,
+        item[0][2] == "auto",
+    ),
+):
     lines.append(
         f"| {process_name} | `/{endpoint}` | {gomaxprocs} | "
         f"{statistics.mean(s['cpu_percent'] for s in samples):.1f}% | "

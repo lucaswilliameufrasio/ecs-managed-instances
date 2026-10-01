@@ -49,6 +49,16 @@ LOCAL_PERF_CONCURRENCIES="64 128 256 512 1024 2048 4096" \
 LOCAL_PERF_GOMAXPROCS="1 4" ./scripts/run-local-performance.sh
 ```
 
+On Go 1.25 and later, pass `LOCAL_PERF_GOMAXPROCS=auto` to leave `GOMAXPROCS` unset for the API process and let the runtime select its value. The report captures the effective value from the API startup log:
+
+```bash
+LOCAL_PERF_APP_CPUS="0" LOCAL_PERF_OHA_CPUS="1-8" \
+LOCAL_PERF_ENDPOINTS="spots" LOCAL_PERF_GOMAXPROCS=auto \
+LOCAL_PERF_CONCURRENCIES="64 128 256 512 1024" \
+LOCAL_PERF_DURATION_SECONDS=20 LOCAL_PERF_REPEATS=5 \
+./scripts/run-local-performance.sh
+```
+
 The project default stays on Go `1.27.1`. To compare the earlier builder runtime against it on the same pinned local HTTP path without changing `.mise.toml`, run the same short matrix once per version:
 
 ```bash

@@ -30,6 +30,7 @@ type response struct {
 }
 
 func main() {
+	log.Printf("runtime GOMAXPROCS=%d", runtime.GOMAXPROCS(0))
 	if os.Getenv("ENABLE_PPROF") == "1" {
 		runtime.SetMutexProfileFraction(1)
 		runtime.SetBlockProfileRate(1)
