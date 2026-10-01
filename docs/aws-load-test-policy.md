@@ -64,6 +64,18 @@ This remained a bounded, single-account application-capacity test, not a DDoS si
 
 The run remains a bounded, single-account application-capacity test, not a DDoS simulation. It incurred ALB-hours and LCU usage while running.
 
+## Completed eight-task throughput run
+
+- Run report: [`../benchmarks/runs/20261001T205742Z.md`](../benchmarks/runs/20261001T205742Z.md)
+- Source revision: `26bb89a`; region/AZ `us-east-1` / `us-east-1a`.
+- Eight ECS tasks were held at the configured min/max of `8`, placed across two `m9g.xlarge` Managed Instance hosts. One `m9g.2xlarge` runner drove the internal ALB with Oha 1.16.0, using 120-second stages from 64 through 8,192 connections.
+- Peak: `569.1k` req/s at 4,096 connections; the 8,192-connection stage yielded `548.0k` req/s. All `252.6M` requests returned HTTP 200 with zero transport errors. The initial `598.6k` estimate (eight times the earlier 74.8k single-task result) was an extrapolation; the measured peak was about 5% below it.
+- CloudWatch `AWS/ApplicationELB/CapacityUtilization` reached 100% for seven consecutive minutes at the high load. AWS documents this as a possible indicator that demand briefly exceeded the ALB's automatic scaling capacity. No LCU reservation was configured. There were no reported ALB rejected connections, ALB 5XXs, or target connection errors.
+- The runner's available five-minute EC2 CPU samples peaked at 68.4%; CPU saturation of the load generator was not observed, though this does not rule out network/socket/Oha limits. ECS service CPU maximum reached 100%. The result therefore indicates both target-side CPU pressure and a possible ALB capacity constraint; it does not isolate either as the sole ceiling.
+- The retry required the existing ECS teardown recovery path after the first destroy attempt. The final audit confirmed empty OpenTofu state, no benchmark VPC, active instances, ENIs, ALB, ECR repository, log group, ECS services, tasks, or active container instances. ECS retains only inactive cluster metadata; terminated runner records remain in EC2 history.
+
+This was ordinary bounded application load against the operator-owned service, not a DDoS simulation. AWS charges already incurred may appear on a later bill.
+
 ## Cleanup evidence
 
 After the baseline, direct autoscaling, interrupted Go 1.27.1 attempt, and completed internal-ALB runs, OpenTofu state was empty. AWS audits found no benchmark EC2 instances, VPCs, load balancers, target groups, ECR repositories, security groups, network interfaces, EBS volumes, IAM roles/instance profiles, autoscaling targets/policies, CloudWatch alarms/log groups, generated key pair, or task-definition revisions. ECS retains only the cluster as `INACTIVE` metadata and its capacity provider as `INACTIVE` with `DELETE_COMPLETE`; there are zero active services, tasks, or container instances, and neither is listed as active. These ECS control-plane tombstones have no running/billable resources. The direct autoscaling run and both Go 1.27.1 attempts needed ECS drain/deregistration recovery; OpenTofu destroy ultimately completed. AWS billing may report already-incurred usage later.

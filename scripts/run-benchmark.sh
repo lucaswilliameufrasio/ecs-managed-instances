@@ -563,7 +563,7 @@ lines = [
     "",
     f"- Region / AZ: `{data['region']}` / `{data['availability_zone']}`",
     f"- ECS managed instance: `{data['ecs_instance_type']}` — {data['ecs_instance_vcpus']} vCPU, {data['ecs_instance_memory_mib'] / 1024:g} GiB RAM",
-    f"- Task: {data['task_cpu_units']} CPU units, {data['task_memory_mib']} MiB memory; desired count 1",
+    f"- Task: {data['task_cpu_units']} CPU units, {data['task_memory_mib']} MiB memory; service minimum desired count {data['autoscaling']['min_tasks']}",
     f"- Load generator: `{data['load_generator_instance_type']}` — {data['load_generator_instance_vcpus']} vCPU, {data['load_generator_instance_memory_mib'] / 1024:g} GiB RAM",
     f"- Load tool: `{data['load_generator_tool']}`",
     f"- Autoscaling: ECS service CPU target {data['autoscaling']['target_cpu_percent']}%, min/max tasks {data['autoscaling']['min_tasks']}/{data['autoscaling']['max_tasks']}, scale-out/in cooldown {data['autoscaling']['scale_out_cooldown_seconds']}/{data['autoscaling']['scale_in_cooldown_seconds']} s",
