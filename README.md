@@ -46,6 +46,8 @@ Each run writes JSON/CSV/log files under ignored `results/` and a Markdown repor
 
 The AWS load-test policy review and completed run records are in [`docs/aws-load-test-policy.md`](docs/aws-load-test-policy.md), including the [latest Go 1.27.1 internal-ALB run](benchmarks/runs/20260929T230553Z.md). Log-retention decisions and the current CloudTrail/CloudWatch inventory are in [`docs/aws-log-retention.md`](docs/aws-log-retention.md).
 
+The next benchmark investigation and deferred ALB LCU-reservation comparison are tracked in [`docs/roadmap.md`](docs/roadmap.md).
+
 For apples-to-apples comparisons, record separate runs with identical settings and change only the ECS instance type. Keep task size, API image and runner type constant. For stronger results, warm up first and repeat each run several times; the harness records CloudWatch CPU, but not memory time series or AWS cost estimates.
 
 ## Local checks
