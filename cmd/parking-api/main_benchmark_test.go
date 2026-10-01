@@ -1,8 +1,10 @@
 package main
 
 import (
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"testing"
 )
 
@@ -101,6 +103,72 @@ func BenchmarkHandler(b *testing.B) {
 						}
 					}
 					b.ReportMetric(float64(len(requests)), "requests/op")
+				})
+			}
+		})
+	}
+}
+
+func writeResponseWithEncoder(w http.ResponseWriter, status int, value response) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(value); err != nil {
+		panic(err)
+	}
+}
+
+func writeResponseWithManualStack(w http.ResponseWriter, status int, value response) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	var buffer [96]byte
+	body := buffer[:0]
+	body = append(body, `{"occupied":`...)
+	body = strconv.AppendInt(body, value.Occupied, 10)
+	body = append(body, `,"capacity":`...)
+	body = strconv.AppendInt(body, value.Capacity, 10)
+	body = append(body, `,"available":`...)
+	body = strconv.AppendInt(body, value.Available, 10)
+	body = append(body, '}', '\n')
+	if _, err := w.Write(body); err != nil {
+		panic(err)
+	}
+}
+
+func BenchmarkResponseEncoding(b *testing.B) {
+	value := response{Occupied: 123, Capacity: capacity, Available: capacity - 123}
+	for _, benchmark := range []struct {
+		name   string
+		writer func(http.ResponseWriter, int, response)
+	}{
+		{name: "json_encoder", writer: writeResponseWithEncoder},
+		{name: "manual_stack", writer: writeResponseWithManualStack},
+		{name: "manual_pool", writer: writeParkingResponse},
+	} {
+		b.Run(benchmark.name, func(b *testing.B) {
+			for _, parallel := range []bool{false, true} {
+				mode := "serial"
+				if parallel {
+					mode = "parallel"
+				}
+				b.Run(mode, func(b *testing.B) {
+					b.ReportAllocs()
+					b.ResetTimer()
+					if parallel {
+						b.RunParallel(func(pb *testing.PB) {
+							writer := newBenchmarkResponseWriter()
+							for pb.Next() {
+								writer.reset()
+								benchmark.writer(writer, http.StatusOK, value)
+							}
+						})
+					} else {
+						writer := newBenchmarkResponseWriter()
+						for i := 0; i < b.N; i++ {
+							writer.reset()
+							benchmark.writer(writer, http.StatusOK, value)
+						}
+					}
+					b.ReportMetric(1, "requests/op")
 				})
 			}
 		})

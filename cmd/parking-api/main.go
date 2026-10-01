@@ -7,12 +7,21 @@ import (
 	"net/http/pprof"
 	"os"
 	"runtime"
+	"strconv"
+	"sync"
 	"sync/atomic"
 )
 
 const capacity int64 = 1000
 
 var occupied atomic.Int64
+
+var parkingResponseBuffers = sync.Pool{
+	New: func() any {
+		buffer := make([]byte, 0, 96)
+		return &buffer
+	},
+}
 
 type response struct {
 	Occupied  int64 `json:"occupied"`
@@ -57,7 +66,7 @@ func handler() http.Handler {
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /spots", func(w http.ResponseWriter, _ *http.Request) {
-		writeJSON(w, http.StatusOK, current())
+		writeParkingResponse(w, http.StatusOK, current())
 	})
 	mux.HandleFunc("POST /park", func(w http.ResponseWriter, _ *http.Request) {
 		for {
@@ -67,7 +76,7 @@ func handler() http.Handler {
 				return
 			}
 			if occupied.CompareAndSwap(old, old+1) {
-				writeJSON(w, http.StatusCreated, current())
+				writeParkingResponse(w, http.StatusCreated, current())
 				return
 			}
 		}
@@ -80,7 +89,7 @@ func handler() http.Handler {
 				return
 			}
 			if occupied.CompareAndSwap(old, old-1) {
-				writeJSON(w, http.StatusOK, current())
+				writeParkingResponse(w, http.StatusOK, current())
 				return
 			}
 		}
@@ -92,6 +101,27 @@ func handler() http.Handler {
 func current() response {
 	count := occupied.Load()
 	return response{Occupied: count, Capacity: capacity, Available: capacity - count}
+}
+
+func writeParkingResponse(w http.ResponseWriter, status int, value response) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+
+	buffer := parkingResponseBuffers.Get().(*[]byte)
+	body := (*buffer)[:0]
+	body = append(body, `{"occupied":`...)
+	body = strconv.AppendInt(body, value.Occupied, 10)
+	body = append(body, `,"capacity":`...)
+	body = strconv.AppendInt(body, value.Capacity, 10)
+	body = append(body, `,"available":`...)
+	body = strconv.AppendInt(body, value.Available, 10)
+	body = append(body, '}', '\n')
+	_, err := w.Write(body)
+	*buffer = body[:0]
+	parkingResponseBuffers.Put(buffer)
+	if err != nil {
+		log.Printf("encode parking response: %v", err)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, value any) {

@@ -14,6 +14,11 @@ REPEATS="${LOCAL_PERF_REPEATS:-3}"
 CONCURRENCY_LEVELS="${LOCAL_PERF_CONCURRENCIES:-64 128 256 512 1024 2048 4096}"
 GOMAXPROCS_LEVELS="${LOCAL_PERF_GOMAXPROCS:-1 4}"
 PROFILE_SECONDS="${LOCAL_PERF_PROFILE_SECONDS:-10}"
+LOCAL_PERF_GO_VERSION="${LOCAL_PERF_GO_VERSION:-1.27.1}"
+GO_MISE_TARGET="go@$LOCAL_PERF_GO_VERSION"
+ENDPOINTS="${LOCAL_PERF_ENDPOINTS:-health spots}"
+APP_CPU_REQUEST="${LOCAL_PERF_APP_CPUS:-}"
+OHA_CPU_REQUEST="${LOCAL_PERF_OHA_CPUS:-}"
 APP_PID=""
 STATS_PID=""
 
@@ -39,8 +44,9 @@ for binary in mise taskset curl python3; do
   command -v "$binary" >/dev/null || { printf 'Missing required tool: %s\n' "$binary" >&2; exit 1; }
 done
 
-read -r APP_CPU OHA_CPUS < <(python3 - <<'PY'
+read -r APP_CPUS OHA_CPUS < <(python3 - "$APP_CPU_REQUEST" "$OHA_CPU_REQUEST" <<'PY'
 import os
+import sys
 
 allowed = []
 with open("/proc/self/status", encoding="utf-8") as status:
@@ -55,14 +61,37 @@ with open("/proc/self/status", encoding="utf-8") as status:
             break
 if len(allowed) < 2:
     raise SystemExit("Need at least two allowed CPUs to separate app and load generator.")
-print(allowed[0], ",".join(map(str, allowed[1:9] or allowed[1:])))
+
+def parse_cpu_set(value):
+    result = set()
+    for part in value.split(","):
+        if not part:
+            continue
+        if "-" in part:
+            first, last = map(int, part.split("-", 1))
+            result.update(range(first, last + 1))
+        else:
+            result.add(int(part))
+    return result
+
+app_cpus = parse_cpu_set(sys.argv[1]) if sys.argv[1] else {allowed[0]}
+if not app_cpus or not app_cpus.issubset(allowed):
+    raise SystemExit(f"App CPUs must be a non-empty subset of the allowed CPUs {allowed}.")
+available_for_oha = [cpu for cpu in allowed if cpu not in app_cpus]
+oha_cpus = parse_cpu_set(sys.argv[2]) if sys.argv[2] else set(available_for_oha[:8])
+if not oha_cpus or not oha_cpus.issubset(allowed) or app_cpus.intersection(oha_cpus):
+    raise SystemExit("Oha CPUs must be allowed CPUs and must not overlap the app CPUs.")
+print(",".join(map(str, sorted(app_cpus))), ",".join(map(str, sorted(oha_cpus))))
 PY
 )
 
-GO_VERSION="$(mise exec -- go version)"
+GO_VERSION="$(mise exec "$GO_MISE_TARGET" -- go version)"
 OHA_BIN="$(mise where cargo:oha)/bin/oha"
 OHA_VERSION="$("$OHA_BIN" --version)"
-[[ "$GO_VERSION" == *"go1.27.1"* ]] || { printf 'Expected Mise Go 1.27.1, got: %s\n' "$GO_VERSION" >&2; exit 1; }
+[[ "$GO_VERSION" == *"go$LOCAL_PERF_GO_VERSION"* ]] || {
+  printf 'Expected Mise Go %s, got: %s\n' "$LOCAL_PERF_GO_VERSION" "$GO_VERSION" >&2
+  exit 1
+}
 [[ "$OHA_VERSION" == "oha 1.16.0" ]] || { printf 'Expected Mise Oha 1.16.0, got: %s\n' "$OHA_VERSION" >&2; exit 1; }
 
 KERNEL_VERSION="$(uname -sr)"
@@ -90,7 +119,7 @@ start_api() {
   if [[ "$enable_pprof" == "1" ]]; then
     app_env+=("ENABLE_PPROF=1" "PPROF_ADDRESS=127.0.0.1:$PPROF_PORT")
   fi
-  taskset -c "$APP_CPU" env "${app_env[@]}" "$APP_BINARY" \
+  taskset -c "$APP_CPUS" env "${app_env[@]}" "$APP_BINARY" \
     >"$RAW_DIR/api-gomaxprocs-${gomaxprocs}.log" 2>&1 &
   APP_PID=$!
 }
@@ -108,12 +137,12 @@ stop_api() {
 }
 
 printf 'Running unprofiled Go handler microbenchmarks...\n'
-mise exec -- go test ./cmd/parking-api -run '^$' -bench '^BenchmarkHandler$' \
+mise exec "$GO_MISE_TARGET" -- go test ./cmd/parking-api -run '^$' -bench '^BenchmarkHandler$' \
   -benchmem -count=5 -cpu 1,4 >"$RAW_DIR/handler-benchmarks.txt"
 
 for benchmark in health spots park_leave_pair; do
   printf 'Profiling Go handler benchmark: %s\n' "$benchmark"
-  mise exec -- go test ./cmd/parking-api -run '^$' \
+  mise exec "$GO_MISE_TARGET" -- go test ./cmd/parking-api -run '^$' \
     -bench "^BenchmarkHandler/${benchmark}/parallel$" \
     -benchmem -benchtime=5s -count=1 -cpu=4 \
     -cpuprofile "$RAW_DIR/${benchmark}.cpu.pprof" \
@@ -121,17 +150,17 @@ for benchmark in health spots park_leave_pair; do
     -mutexprofile "$RAW_DIR/${benchmark}.mutex.pprof" -mutexprofilefraction=1 \
     -blockprofile "$RAW_DIR/${benchmark}.block.pprof" -blockprofilerate=1 \
     >"$RAW_DIR/${benchmark}.profile-run.txt"
-  mise exec -- go tool pprof -top -nodecount=25 "$RAW_DIR/${benchmark}.cpu.pprof" \
+  mise exec "$GO_MISE_TARGET" -- go tool pprof -top -nodecount=25 "$RAW_DIR/${benchmark}.cpu.pprof" \
     >"$RAW_DIR/${benchmark}.cpu-top.txt"
-  mise exec -- go tool pprof -top -alloc_space -nodecount=25 "$RAW_DIR/${benchmark}.heap.pprof" \
+  mise exec "$GO_MISE_TARGET" -- go tool pprof -top -alloc_space -nodecount=25 "$RAW_DIR/${benchmark}.heap.pprof" \
     >"$RAW_DIR/${benchmark}.heap-top.txt"
 done
 
-printf 'Building native release binary with Go 1.27.1...\n'
-mise exec -- env CGO_ENABLED=0 GOOS=linux go build -trimpath \
+printf 'Building native release binary with Go %s...\n' "$LOCAL_PERF_GO_VERSION"
+mise exec "$GO_MISE_TARGET" -- env CGO_ENABLED=0 GOOS=linux go build -trimpath \
   -ldflags="-s -w" -o "$APP_BINARY" ./cmd/parking-api
 
-for endpoint in health spots; do
+for endpoint in $ENDPOINTS; do
   case "$endpoint" in
     health) path="/health" ;;
     spots) path="/spots" ;;
@@ -258,15 +287,15 @@ curl --fail --silent "http://127.0.0.1:${PPROF_PORT}/debug/pprof/mutex" \
   >"$RAW_DIR/http-spots.mutex.pprof"
 curl --fail --silent "http://127.0.0.1:${PPROF_PORT}/debug/pprof/block" \
   >"$RAW_DIR/http-spots.block.pprof"
-mise exec -- go tool pprof -top -nodecount=30 "$RAW_DIR/http-spots.cpu.pprof" \
+mise exec "$GO_MISE_TARGET" -- go tool pprof -top -nodecount=30 "$RAW_DIR/http-spots.cpu.pprof" \
   >"$RAW_DIR/http-spots.cpu-top.txt"
-mise exec -- go tool pprof -top -alloc_space -nodecount=30 "$RAW_DIR/http-spots.heap.pprof" \
+mise exec "$GO_MISE_TARGET" -- go tool pprof -top -alloc_space -nodecount=30 "$RAW_DIR/http-spots.heap.pprof" \
   >"$RAW_DIR/http-spots.heap-top.txt"
 stop_api
 
 python3 - "$RAW_DIR" "$REPORT_MD" "$RUN_ID" "$GO_VERSION" "$OHA_VERSION" \
   "$KERNEL_VERSION" "$PERF_VERSION" "$PERF_PARANOID" "$BPFTRACE_VERSION" \
-  "$APP_CPU" "$OHA_CPUS" "$DURATION_SECONDS" "$REPEATS" \
+  "$APP_CPUS" "$OHA_CPUS" "$DURATION_SECONDS" "$REPEATS" \
   "$CONCURRENCY_LEVELS" "$GOMAXPROCS_LEVELS" <<'PY'
 import csv
 import glob
@@ -278,7 +307,7 @@ import sys
 
 (
     raw_dir, report_path, run_id, go_version, oha_version,
-    kernel, perf_version, perf_paranoid, bpftrace_version, app_cpu, oha_cpus,
+    kernel, perf_version, perf_paranoid, bpftrace_version, app_cpus, oha_cpus,
     duration, repeats, concurrency_levels, gomaxprocs_levels,
 ) = sys.argv[1:]
 
@@ -377,7 +406,7 @@ lines = [
     f"- Kernel: `{kernel}`",
     f"- perf: `{perf_version}`; `perf_event_paranoid={perf_paranoid}`",
     f"- bpftrace: `{bpftrace_status}`",
-    f"- Native app pinned to CPU `{app_cpu}`; Oha pinned to CPUs `{oha_cpus}`; direct loopback HTTP/1.1, no Docker network or ALB",
+    f"- Native app pinned to CPUs `{app_cpus}`; Oha pinned to CPUs `{oha_cpus}`; direct loopback HTTP/1.1, no Docker network or ALB",
     f"- Oha: 8 worker threads; GOMAXPROCS levels `{gomaxprocs_levels}`",
     f"- Sweep: `{concurrency_levels}` connections, {duration}s per sample, {repeats} repeats, after a 5s warm-up",
     "",

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -38,8 +39,16 @@ func TestParkingLifecycle(t *testing.T) {
 			t.Errorf("close /spots response body: %v", err)
 		}
 	}()
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantJSON := "{\"occupied\":1,\"capacity\":1000,\"available\":999}\n"
+	if string(body) != wantJSON {
+		t.Fatalf("GET /spots body = %q, want %q", body, wantJSON)
+	}
 	var spots responseBody
-	if err := json.NewDecoder(response.Body).Decode(&spots); err != nil {
+	if err := json.Unmarshal(body, &spots); err != nil {
 		t.Fatal(err)
 	}
 	if spots.Occupied != 1 || spots.Available != capacity-1 {
