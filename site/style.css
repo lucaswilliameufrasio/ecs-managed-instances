@@ -22,6 +22,14 @@ a:hover { color: var(--orange); }
 .brand { font-size: 21px; font-weight: 800; text-decoration: none; color: var(--ink); }
 .brand span { font-weight: 400; }
 nav { display: flex; gap: 24px; font-size: 14px; }
+.header-actions { display: flex; align-items: center; gap: 28px; }
+.locale { display: flex; align-items: center; gap: 10px; font-size: 13px; }
+.locale select { width: auto; margin: 0; }
+h1, h2, h3 { text-wrap: balance; }
+h1 { max-width: 15ch; }
+h2 { max-width: 30ch; }
+button, a, select { touch-action: manipulation; }
+section[id] { scroll-margin-top: 24px; }
 .intro { display: grid; grid-template-columns: 1.5fr 1fr; gap: 80px; align-items: center; padding: 64px 0 80px; }
 h1 { font-size: clamp(42px, 5.5vw, 76px); letter-spacing: -0.055em; line-height: 1.02; margin: 0 0 28px; font-weight: 750; }
 p { line-height: 1.65; max-width: 72ch; }
@@ -40,7 +48,7 @@ select { width: 100%; min-height: 44px; margin-top: 8px; padding: 8px; border: 1
 .caution { font-size: 13px; color: var(--muted); max-width: none; }
 .summary { display: grid; grid-template-columns: repeat(4, 1fr); gap: 24px; padding: 30px 0 40px; }
 .metric { border-left: 2px solid #b7d4df; padding-left: 18px; }
-.metric strong { display: block; font-size: clamp(26px, 3vw, 40px); font-weight: 650; letter-spacing: -0.04em; }
+.metric strong { display: block; font-size: clamp(26px, 3vw, 40px); font-weight: 650; letter-spacing: -0.04em; font-variant-numeric: tabular-nums; }
 .metric span, .metric small { display: block; color: var(--muted); font-size: 13px; margin-top: 6px; }
 .chart-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 36px; }
 .chart { min-width: 0; border-top: 2px solid #d8e6ec; padding-top: 22px; }
@@ -48,6 +56,7 @@ select { width: 100%; min-height: 44px; margin-top: 8px; padding: 8px; border: 1
 .chart p { color: var(--muted); font-size: 13px; margin-top: 8px; }
 svg { display: block; width: 100%; height: auto; overflow: visible; }
 svg text { font: 12px "Segoe UI", sans-serif; fill: var(--muted); }
+svg .axis-label { font-weight: 600; fill: var(--ink); }
 .legend { display: flex; flex-wrap: wrap; gap: 18px; margin: 12px 0 24px; font-size: 13px; }
 .legend span { display: inline-flex; align-items: center; gap: 8px; }
 .legend i { width: 18px; height: 3px; background: var(--line); }
@@ -72,6 +81,7 @@ tbody tr:hover { background: #f4f8fa; }
 footer { border-top: 1px solid #d8e6ec; padding-block: 28px; font-size: 13px; display: flex; justify-content: space-between; gap: 24px; color: var(--muted); }
 [hidden] { display: none !important; }
 @media (max-width: 850px) {
+  .masthead { flex-wrap: wrap; padding-block: 20px; }
   .intro { gap: 32px; }
   .controls { grid-template-columns: 1fr 1fr; }
   .summary { grid-template-columns: 1fr 1fr; }
@@ -79,6 +89,8 @@ footer { border-top: 1px solid #d8e6ec; padding-block: 28px; font-size: 13px; di
   .config-grid { grid-template-columns: 1fr; }
 }
 @media (max-width: 560px) {
+  .header-actions { flex-wrap: wrap; gap: 16px; width: 100%; justify-content: space-between; }
+  .locale { flex-wrap: wrap; }
   .masthead, main, footer { padding-inline: 20px; }
   .masthead { align-items: start; padding-block: 24px; flex-direction: column; }
   .intro { grid-template-columns: 1fr; padding: 32px 0 40px; }

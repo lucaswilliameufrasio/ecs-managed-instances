@@ -3,56 +3,60 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="description" content="Resultados e curvas de desempenho de uma API Go em ECS Managed Instances, com benchmarks AWS e locais separados.">
-    <title>ECS Managed Instances — Laboratório de desempenho</title>
+    <meta name="description" data-i18n-content="Resultados e curvas de desempenho de uma API Go em ECS Managed Instances, com benchmarks AWS e locais separados." content="Resultados e curvas de desempenho de uma API Go em ECS Managed Instances, com benchmarks AWS e locais separados.">
+    <title data-i18n>ECS Managed Instances — Laboratório de desempenho</title>
     <link rel="stylesheet" href="./style.css">
+    <script src="./i18n.js" defer></script>
     <script src="./app.js" defer></script>
   </head>
   <body>
-    <a class="skip" href="#results">Ir para os resultados</a>
+    <a class="skip" href="#results" data-i18n>Ir para os resultados</a>
     <header class="masthead">
-      <a class="brand" href="./">ECS <span>Managed Instances</span></a>
-      <nav aria-label="Principal"><a href="#method">Metodologia</a><a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances">GitHub</a></nav>
+      <a class="brand" href="./" translate="no">ECS <span>Managed Instances</span></a>
+      <div class="header-actions">
+        <nav aria-label="Principal" data-i18n-aria-label="Principal"><a href="#method" data-i18n>Metodologia</a><a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances" translate="no">GitHub</a></nav>
+        <label class="locale"><span data-i18n>Idioma</span><select id="language" name="language" autocomplete="off"><option value="pt-BR" lang="pt-BR" translate="no">Português (Brasil)</option><option value="en-US" lang="en-US" translate="no">English (US)</option></select></label>
+      </div>
     </header>
     <main>
       <section class="intro">
-        <div><h1>Onde a carga<br>encontra o limite.</h1><p>Uma API Go. Concorrência crescente. Resultados medidos em ECS Managed Instances — do primeiro request ao platô de throughput.</p></div>
-        <div class="route" aria-label="Arquitetura do benchmark AWS com ALB"><span>Graviton runner<small>Oha · HTTP/1.1</small></span><b aria-hidden="true">↓</b><span>ALB interno<small>Dois Availability Zones</small></span><b aria-hidden="true">↓</b><span>ECS Managed Instances<small>API Go · GET /spots</small></span></div>
+        <div><h1 data-i18n>Onde a carga encontra o limite.</h1><p data-i18n>Uma API Go. Concorrência crescente. Resultados medidos em ECS Managed Instances — do primeiro request ao platô de throughput.</p></div>
+        <div class="route" aria-label="Arquitetura do benchmark AWS com ALB" data-i18n-aria-label="Arquitetura do benchmark AWS com ALB"><span><span data-i18n>Graviton runner</span><small data-i18n>Oha · HTTP/1.1</small></span><b aria-hidden="true">↓</b><span><span data-i18n>ALB interno</span><small data-i18n>Dois Availability Zones</small></span><b aria-hidden="true">↓</b><span><span translate="no">ECS Managed Instances</span><small data-i18n>API Go · GET /spots</small></span></div>
       </section>
       <section id="results" aria-labelledby="results-title">
-        <div class="section-heading"><h2 id="results-title">Explore as medições</h2><span id="run-count"></span></div>
-        <p id="status" role="status">Carregando relatórios…</p>
-        <noscript><p>Ative JavaScript para explorar os gráficos. Os <a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances/tree/main/benchmarks">relatórios originais</a> também estão disponíveis no GitHub.</p></noscript>
+        <div class="section-heading"><h2 id="results-title" data-i18n>Explore as medições</h2><span id="run-count"></span></div>
+        <p id="status" role="status" data-i18n>Carregando relatórios…</p>
+        <noscript><p><span data-i18n>Ative JavaScript para explorar os gráficos.</span> <a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances/tree/main/benchmarks" data-i18n>Relatórios originais no GitHub</a>.</p></noscript>
         <div id="dashboard" hidden>
           <div class="controls">
-            <label>Ambiente<select id="kind"><option value="aws">AWS · Graviton ARM64</option><option value="local">Local · x86_64</option></select></label>
-            <label>Execução<select id="run"></select></label>
-            <label>Endpoint / GOMAXPROCS<select id="series"></select></label>
-            <label>Comparar execução<select id="compare"></select></label>
+            <label><span data-i18n>Ambiente</span><select id="kind" name="kind" autocomplete="off"><option value="aws" data-i18n>AWS · Graviton ARM64</option><option value="local" data-i18n>Local · x86_64</option></select></label>
+            <label><span data-i18n>Execução</span><select id="run" name="run" autocomplete="off"></select></label>
+            <label><span data-i18n>Endpoint / GOMAXPROCS</span><select id="series" name="series" autocomplete="off"></select></label>
+            <label><span data-i18n>Comparar execução</span><select id="compare" name="compare" autocomplete="off"></select></label>
           </div>
-          <p class="caution">Comparação exploratória, não um ranking: hardware, runtime, caminho de rede e duração podem variar. Confira as configurações antes de concluir ganhos.</p>
+          <p class="caution" data-i18n>Comparação exploratória, não um ranking: hardware, runtime, caminho de rede e duração podem variar. Confira as configurações antes de concluir ganhos.</p>
           <div id="summary" class="summary" aria-live="polite"></div>
           <div class="chart-grid">
-            <article class="chart wide"><h3>Throughput sob carga</h3><p>Requests por segundo × conexões simultâneas</p><div id="throughput"></div></article>
-            <article class="chart"><h3>O custo em latência</h3><p>Percentis em milissegundos · execução selecionada</p><div id="latency"></div></article>
-            <article class="chart"><h3>Capacidade observada</h3><p>Contagens ao final de cada estágio · não uma série temporal</p><div id="capacity"></div></article>
+            <article class="chart wide"><h3 data-i18n>Throughput sob carga</h3><p data-i18n>Requests por segundo × conexões simultâneas</p><div id="throughput"></div></article>
+            <article class="chart"><h3 data-i18n>O custo em latência</h3><p data-i18n>Percentis em milissegundos · execução selecionada</p><div id="latency"></div></article>
+            <article class="chart"><h3 data-i18n>Capacidade observada</h3><p data-i18n>Contagens ao final de cada estágio · não uma série temporal</p><div id="capacity"></div></article>
           </div>
-          <details class="configuration" open><summary>Configuração e origem dos dados</summary><div id="configuration"></div></details>
-          <div class="section-heading"><h3>Valores por estágio</h3><button id="download" type="button">Baixar CSV</button></div>
-          <div class="table-scroll" tabindex="0" role="region" aria-label="Tabela de resultados, role horizontalmente para ver todas as colunas"><table><caption id="table-caption"></caption><thead><tr><th scope="col">Conexões</th><th scope="col">req/s</th><th scope="col">p50 (ms)</th><th scope="col">p95 (ms)</th><th scope="col">p99 (ms)</th><th scope="col">Tasks</th><th scope="col">Hosts</th><th scope="col">Erros</th></tr></thead><tbody id="rows"></tbody></table></div>
+          <details class="configuration" open><summary data-i18n>Configuração e origem dos dados</summary><div id="configuration"></div></details>
+          <div class="section-heading"><h3 data-i18n>Valores por estágio</h3><button id="download" type="button" data-i18n>Baixar CSV</button></div>
+          <div class="table-scroll" tabindex="0" role="region" aria-label="Tabela de resultados, role horizontalmente para ver todas as colunas" data-i18n-aria-label="Tabela de resultados, role horizontalmente para ver todas as colunas"><table><caption id="table-caption"></caption><thead><tr><th scope="col" data-i18n>Conexões</th><th scope="col" translate="no">req/s</th><th scope="col" translate="no">p50 (ms)</th><th scope="col" translate="no">p95 (ms)</th><th scope="col" translate="no">p99 (ms)</th><th scope="col" data-i18n>Tasks</th><th scope="col" data-i18n>Hosts</th><th scope="col" data-i18n>Erros</th></tr></thead><tbody id="rows"></tbody></table></div>
         </div>
       </section>
       <section id="method" class="method">
-        <h2>O que estes números dizem.<br>E o que não dizem.</h2>
+        <h2 data-i18n>O que estes números dizem. E o que não dizem.</h2>
         <div class="method-grid">
-          <article><h3>Tráfego real, estado em memória</h3><p>A API de estacionamento usa Go net/http, sem banco de dados. O runner envia HTTP para tasks Graviton; o histórico inclui IP direto e ALB interno. A infraestrutura é temporária.</p></article>
-          <article><h3>Uma curva, não uma promessa</h3><p>Estágios aumentam a concorrência e registram throughput, latência e erros. Os testes AWS não têm warm-up separado. Aumento de latência com throughput estável indica um platô, não identifica sozinho o gargalo.</p></article>
-          <article><h3>Local não é AWS</h3><p>Medições locais x86_64 ajudam a investigar a aplicação, mas não são diretamente comparáveis a ARM64. Medianas locais agregam repetições; o histórico também inclui Docker com overhead de encaminhamento.</p></article>
-          <article><h3>Resultados rastreáveis</h3><p>Os dados vêm apenas dos relatórios Markdown versionados. Tentativas interrompidas são excluídas. CPU sem série por estágio, memória e custos não são estimados nem inventados.</p></article>
+          <article><h3 data-i18n>Tráfego real, estado em memória</h3><p data-i18n>A API de estacionamento usa Go net/http, sem banco de dados. O runner envia HTTP para tasks Graviton; o histórico inclui IP direto e ALB interno. A infraestrutura é temporária.</p></article>
+          <article><h3 data-i18n>Uma curva, não uma promessa</h3><p data-i18n>Estágios aumentam a concorrência e registram throughput, latência e erros. Os testes AWS não têm warm-up separado. Aumento de latência com throughput estável indica um platô, não identifica sozinho o gargalo.</p></article>
+          <article><h3 data-i18n>Local não é AWS</h3><p data-i18n>Medições locais x86_64 ajudam a investigar a aplicação, mas não são diretamente comparáveis a ARM64. Medianas locais agregam repetições; o histórico também inclui Docker com overhead de encaminhamento.</p></article>
+          <article><h3 data-i18n>Resultados rastreáveis</h3><p data-i18n>Os dados vêm apenas dos relatórios Markdown versionados. Tentativas interrompidas são excluídas. CPU sem série por estágio, memória e custos não são estimados nem inventados.</p></article>
         </div>
-        <p><a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances/blob/main/docs/roadmap.md">Próximas investigações</a> · <a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances/blob/main/docs/aws-load-test-policy.md">Política de testes AWS</a></p>
+        <p><a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances/blob/main/docs/roadmap.md" data-i18n>Próximas investigações</a> · <a href="https://github.com/lucaswilliameufrasio/ecs-managed-instances/blob/main/docs/aws-load-test-policy.md" data-i18n>Política de testes AWS</a></p>
       </section>
     </main>
-    <footer>Laboratório de desempenho · ECS Managed Instances <span>Dados estáticos. Sem conexão com sua conta AWS.</span></footer>
+    <footer><span data-i18n>Laboratório de desempenho · ECS Managed Instances</span><span data-i18n>Dados estáticos. Sem conexão com sua conta AWS.</span></footer>
   </body>
 </html>

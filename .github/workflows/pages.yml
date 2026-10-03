@@ -28,6 +28,7 @@ jobs:
         run: |
           python3 -m unittest discover -s scripts -p 'test_*.py' -v
           node --check site/app.js
+          node --check site/i18n.js
       - name: Build static dashboard
         run: python3 scripts/build-site.py
       - name: Install browser test dependencies

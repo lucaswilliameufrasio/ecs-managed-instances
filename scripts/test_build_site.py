@@ -2,6 +2,7 @@
 
 import importlib.util
 import json
+import shutil
 import tempfile
 import unittest
 from pathlib import Path
@@ -77,7 +78,7 @@ class ReportTests(unittest.TestCase):
             self.assertNotIn("20260929T221924Z", first)
             for sensitive in ("376101301076", ".dkr.ecr.", "app-logs", "results/", "CloudWatch group", "bpftrace"):
                 self.assertNotIn(sensitive, first)
-            self.assertEqual({p.name for p in output.iterdir()}, {"index.html", "app.js", "style.css", "data.json", ".nojekyll"})
+            self.assertEqual({p.name for p in output.iterdir()}, {"index.html", "app.js", "i18n.js", "style.css", "data.json", ".nojekyll"})
             for run in data["runs"]:
                 self.assertTrue(run["points"])
                 self.assertTrue(run["source"].startswith(SITE.REPOSITORY))
@@ -85,6 +86,20 @@ class ReportTests(unittest.TestCase):
     def test_empty_repository_fails_build(self):
         with tempfile.TemporaryDirectory() as directory, self.assertRaises(ValueError):
             SITE.build(Path(directory), Path(directory) / "public")
+
+    def test_new_report_automatically_becomes_latest(self):
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            reports = root / "benchmarks/runs"
+            reports.mkdir(parents=True)
+            shutil.copytree(SITE.ROOT / "site", root / "site")
+            source = SITE.ROOT / "benchmarks/runs/20261001T205742Z.md"
+            shutil.copyfile(source, reports / source.name)
+            shutil.copyfile(source, reports / "20990101T000000Z.md")
+            output = root / "public"
+            SITE.build(root, output)
+            data = json.loads((output / "data.json").read_text())
+            self.assertEqual([run["id"] for run in data["runs"]], ["20990101T000000Z", source.stem])
 
 
 if __name__ == "__main__":

@@ -72,10 +72,20 @@ python3 -m http.server 8000 --directory _site
 ```
 
 Open <http://localhost:8000>. Dashboard sources live in `site/`.
+The header language selector supports `pt-BR` and `en-US`. Language selection
+uses the URL first, then a saved preference, browser language, and Portuguese as
+the fallback. Dates stay in UTC; dates and numbers follow the selected locale.
+Switching language preserves the selected run, series and comparison. The URL
+contains these filters so you can share the same view. Original report
+configuration is kept in English and is explicitly marked as source material.
+Translations live in `site/i18n.js`; mark static text with `data-i18n` and add
+the corresponding English message. Chart axes include metric names and units.
+
 The Pages workflow also runs Chromium checks for every run/series, comparisons,
 CSV downloads, project-subpath URLs, mobile layout, loading failures and automated
 WCAG accessibility checks (Playwright + axe). Browser dependencies are test-only;
 the published page uses no external scripts, fonts or chart libraries.
+The project-local frontend design skill is in `.agents/skills/frontend-design/`.
 
 ## Local checks
 

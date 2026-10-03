@@ -93,7 +93,7 @@ def build(root, output):
     if not runs:
         raise ValueError("No benchmark reports found")
     output.mkdir(parents=True, exist_ok=True)
-    for name in ("index.html", "style.css", "app.js"):
+    for name in ("index.html", "style.css", "i18n.js", "app.js"):
         shutil.copyfile(root / "site" / name, output / name)
     (output / "data.json").write_text(json.dumps({"runs": runs}, ensure_ascii=False, indent=2) + "\n")
     (output / ".nojekyll").touch()
