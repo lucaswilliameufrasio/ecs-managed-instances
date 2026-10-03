@@ -50,6 +50,33 @@ The next benchmark investigation and deferred ALB LCU-reservation comparison are
 
 For apples-to-apples comparisons, record separate runs with identical settings and change only the ECS instance type. Keep task size, API image and runner type constant. For stronger results, warm up first and repeat each run several times; the harness records CloudWatch CPU, but not memory time series or AWS cost estimates.
 
+## Interactive benchmark dashboard
+
+The static HTML dashboard is published with GitHub Pages at
+<https://lucaswilliameufrasio.github.io/ecs-managed-instances/> after the Pages workflow runs on `main`.
+Select **Settings → Pages → Source → GitHub Actions** in the repository to enable deployment.
+Pull requests build and test the dashboard without deploying it.
+
+Throughput, latency and stage-end task/host charts are extracted from versioned
+`benchmarks/runs/` and `benchmarks/local/` reports. AWS and local results remain
+separate; comparisons show both configurations, not a normalized ranking.
+Interrupted runs are excluded. Raw logs, account IDs and ECR image URLs are not
+copied into the public artifact. Add a report and the next deployment refreshes the data.
+
+Preview locally (no frontend dependencies or AWS credentials):
+
+```bash
+python3 -m unittest discover -s scripts -p 'test_*.py' -v
+python3 scripts/build-site.py
+python3 -m http.server 8000 --directory _site
+```
+
+Open <http://localhost:8000>. Dashboard sources live in `site/`.
+The Pages workflow also runs Chromium checks for every run/series, comparisons,
+CSV downloads, project-subpath URLs, mobile layout, loading failures and automated
+WCAG accessibility checks (Playwright + axe). Browser dependencies are test-only;
+the published page uses no external scripts, fonts or chart libraries.
+
 ## Local checks
 
 ```bash

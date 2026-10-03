@@ -1,0 +1,61 @@
+name: Benchmark dashboard
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pages-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Test report extraction and JavaScript syntax
+        run: |
+          python3 -m unittest discover -s scripts -p 'test_*.py' -v
+          node --check site/app.js
+      - name: Build static dashboard
+        run: python3 scripts/build-site.py
+      - name: Install browser test dependencies
+        run: |
+          npm install --prefix "$RUNNER_TEMP/browser-check" playwright@1.63.0 @axe-core/playwright@4.13.0
+          "$RUNNER_TEMP/browser-check/node_modules/.bin/playwright" install --with-deps chromium
+      - name: Check dashboard in Chromium
+        env:
+          NODE_PATH: ${{ runner.temp }}/browser-check/node_modules
+          SITE_SCREENSHOT: ${{ runner.temp }}/dashboard-desktop.png
+          SITE_MOBILE_SCREENSHOT: ${{ runner.temp }}/dashboard-mobile.png
+        run: node scripts/test-site.cjs
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - uses: actions/configure-pages@v5
+      - name: Deploy GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

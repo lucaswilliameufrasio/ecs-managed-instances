@@ -8,3 +8,5 @@ results/
 inventory.ini
 *.pem
 ansible/.inventory.generated.ini
+_site/
+__pycache__/
